@@ -1,0 +1,29 @@
+name: Publish APK download
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/publish-apk.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: iFiles-install-apk
+          path: apk
+          github-token: ${{ github.token }}
+          run-id: 39452355160
+      - name: Publish tested Android APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -s apk/app-release.apk
+          cp apk/app-release.apk iFiles.apk
+          if ! gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create v0.1.0 --repo "$GITHUB_REPOSITORY" --target f33394c43b113d01ff24364196de4d58dae83ada --title "iFiles 0.1.0" --notes "Personal Android APK from the successfully tested GitHub Actions build. Download iFiles.apk directly."
+          fi
+          gh release upload v0.1.0 iFiles.apk --repo "$GITHUB_REPOSITORY" --clobber
