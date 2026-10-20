@@ -89,4 +89,44 @@ class FileEngineTest {
         listOf("../file","..",".","/file","a\\b","a\u0000b").forEach{v->assertThrows(IllegalArgumentException::class.java){Names.check(v)}}
         listOf("../file","/absolute","C:/file","a/../b","a\\b").forEach{v->assertThrows(IllegalArgumentException::class.java){Names.zipParts(v)}}
     }
+    @Test fun purgeAllDeletesOnlyTrashBackups() {
+        val untouched=File(root,"keep.txt").apply {writeText("keep me")}
+        for(name in listOf("first.txt","second.txt")) {
+            val f=File(root,name).apply {writeText("backup")}
+            engine.trash(ref(f),ref(root))
+        }
+        val ids=engine.trashRecords().map {it.getString("id")}
+        assertEquals(2,ids.size)
+        engine.purgeMany(ids)
+        assertTrue(engine.trashRecords().isEmpty())
+        assertEquals("keep me",untouched.readText())
+    }
+    @Test fun purgeSelectionIsValidatedBeforeAnyDeletion() {
+        val f=File(root,"saved.txt").apply {writeText("valuable")}
+        engine.trash(ref(f),ref(root))
+        val record=engine.trashRecords().single()
+        assertThrows(IllegalArgumentException::class.java) {
+            engine.purgeMany(listOf(record.getString("id"),"../outside"))
+        }
+        assertEquals(1,engine.trashRecords().size)
+        assertEquals("valuable",s.input(record.getString("backup")).bufferedReader().readText())
+    }
+    @Test fun purgeSelectionCanBeRepeatedAndDeduplicated() {
+        val f=File(root,"file.txt").apply {writeText("data")}
+        engine.trash(ref(f),ref(root))
+        val id=engine.trashRecords().single().getString("id")
+        engine.purgeMany(listOf(id,id))
+        engine.purgeMany(listOf(id))
+        assertTrue(engine.trashRecords().isEmpty())
+    }
+    @Test fun purgeRestoredBackupLeavesRestoredFileUntouched() {
+        val f=File(root,"restore.txt").apply {writeText("restored content")}
+        engine.trash(ref(f),ref(root))
+        val id=engine.trashRecords().single().getString("id")
+        engine.restore(id,null)
+        engine.purgeMany(listOf(id))
+        assertEquals("restored content",f.readText())
+        assertTrue(engine.trashRecords().isEmpty())
+    }
+
 }

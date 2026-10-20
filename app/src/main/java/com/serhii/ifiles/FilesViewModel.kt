@@ -17,7 +17,7 @@ data class ScreenState(
     val loading: Boolean=false, val error: String?=null, val warning: String?=null, val query: String="", val grid: Boolean=false,
     val sort: String="Имя",val descending: Boolean=false,val selected: Set<String> = emptySet(),
     val selecting: Boolean=false, val favorites: Set<String> = emptySet(),val theme: String="Системная",
-    val jobs: List<WorkInfo> = emptyList(), val notice: String? = null
+    val jobs: List<WorkInfo> = emptyList(), val notice: String? = null, val locationsVersion: Long = 0
 ) { val current: Entry? get()=stack.lastOrNull() }
 
 class FilesViewModel(app: Application): AndroidViewModel(app) {
@@ -25,7 +25,19 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
     private val mutable=MutableStateFlow(ScreenState(grid=storage.prefs.getBoolean("grid",false),sort=storage.prefs.getString("sort","Имя")!!,theme=storage.prefs.getString("theme","Системная")!!))
     val state=mutable.asStateFlow();private var loadJob: Job?=null
     private var previousJobs=emptyMap<java.util.UUID,WorkInfo.State>()
+    private val storageManager=app.getSystemService(android.os.storage.StorageManager::class.java)
+    private val volumeCallback=object: android.os.storage.StorageManager.StorageVolumeCallback() {
+        override fun onStateChanged(volume: android.os.storage.StorageVolume) {
+            change { it.copy(locationsVersion=it.locationsVersion+1) }
+            refresh()
+        }
+    }
+    override fun onCleared() {
+        storageManager.unregisterStorageVolumeCallback(volumeCallback)
+        super.onCleared()
+    }
     init {
+        storageManager.registerStorageVolumeCallback(app.mainExecutor,volumeCallback)
         runCatching {
             val refs=JSONArray(storage.prefs.getString("stack","[]"));val stack=(0 until refs.length()).map { storage.stat(refs.getString(it)) }.takeWhile { it.directory }
             mutable.value=mutable.value.copy(stack=stack,tab=storage.prefs.getString("tab","Обзор")!!)
@@ -110,15 +122,6 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
         Operations.enqueue(getApplication(),kind,refs,parent,name,sourceParent)
         change { it.copy(selected=emptySet(),selecting=false,notice="Операция добавлена") }
     }
-    suspend fun roots(): List<Entry> = withContext(Dispatchers.IO) {
-        val result=mutableListOf(storage.stat(storage.local).copy(name="iFiles"))
-        if(Environment.isExternalStorageManager()) {
-            result+=storage.stat(storage.phone).copy(name="На этом телефоне")
-            File(Environment.getExternalStorageDirectory(),"Download").mkdirs()
-            result+=storage.stat(storage.downloads).copy(name="Загрузки")
-        }
-        storage.strings("roots").forEach { ref -> result+=runCatching { storage.stat(ref) }.getOrElse { Entry(ref,"Недоступная папка · выберите повторно",true) } }
-        result
-    }
+    suspend fun roots(): List<Entry> = withContext(Dispatchers.IO) { DeviceLocations(storage).roots() }
     fun cancel(id: java.util.UUID) {WorkManager.getInstance(getApplication()).cancelWorkById(id)}
 }

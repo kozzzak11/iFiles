@@ -52,7 +52,7 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
                 "zip" -> Archives(engine).zip(refs,parent,r.getString("name"))
                 "unzip" -> refs.forEach { Archives(engine).unzip(it,parent) }
                 "restore" -> refs.forEach { engine.restore(it,parent.ifBlank { null }) }
-                "purge" -> refs.forEach { engine.purge(it) }
+                "purge" -> engine.purgeMany(refs)
                 else -> error("Неизвестная операция")
             }
             s.atomic(File(applicationContext.filesDir,"tasks/${id}.result"),JSONObject().put("ok",true))

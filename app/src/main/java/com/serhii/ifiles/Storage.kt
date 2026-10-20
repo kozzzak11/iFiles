@@ -19,7 +19,8 @@ import java.util.UUID
 
 /** A stable reference is either file:///… or an Android document/content URI. */
 data class Entry(val ref: String, val name: String, val directory: Boolean, val size: Long = -1,
-                 val modified: Long = 0, val mime: String = "application/octet-stream")
+                 val modified: Long = 0, val mime: String = "application/octet-stream",
+                 val volumeId: String? = null, val requiresGrant: Boolean = false)
 
 object Names {
     fun check(value: String): String {
@@ -268,8 +269,22 @@ class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progr
         check(equivalent(backup,target)); rec.put("state","restored").put("restoredTo",target); s.atomic(File(dir,"record.json"),rec)
         // Keep verified backup until explicit purge, including after successful restore.
     }
+    fun purgeMany(ids: List<String>) {
+        // Validate the complete snapshot before deleting anything.
+        require(ids.all { Regex("[a-f0-9-]{36}").matches(it) }) { "Недопустимый элемент корзины" }
+        var failures=0
+        for(id in ids.distinct()) {
+            checkpoint()
+            try { purge(id) } catch(e: java.io.IOException) { failures++ }
+            catch(e: SecurityException) { failures++ }
+            catch(e: IllegalStateException) { failures++ }
+        }
+        check(failures==0) { "Не удалось удалить элементов: " + failures + ". Остальные выбранные элементы удалены." }
+    }
     fun purge(id: String) {
         require(Regex("[a-f0-9-]{36}").matches(id))
-        check(File(trashRoot,id).deleteRecursively()) { "Не удалось очистить корзину" }
+        val directory=File(trashRoot,id)
+        if(!directory.exists())return
+        check(directory.deleteRecursively()) { "Не удалось очистить корзину" }
     }
 }

@@ -110,6 +110,25 @@ private val Blue=Color(0xFF007AFF)
     val treePicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()){u ->
         if(u!=null)runCatching{s.addTree(u);vm.refresh()}.onFailure(vm::error)
     }
+    val volumePicker=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val uri=result.data?.data
+        if(result.resultCode==android.app.Activity.RESULT_OK && uri!=null) {
+            runCatching { s.addTree(uri) }.onSuccess {
+                scope.launch {
+                    runCatching { withContext(Dispatchers.IO) { s.stat(uri.toString()) } }
+                        .onSuccess { vm.open(it) }.onFailure(vm::error)
+                }
+            }.onFailure(vm::error)
+            vm.refresh()
+        }
+    }
+    fun openLocation(entry: Entry) {
+        if(entry.requiresGrant && entry.volumeId!=null) {
+            val intent=DeviceLocations(s).accessIntent(entry.volumeId)
+            if(intent==null)vm.notice("Накопитель отключён")
+            else runCatching { volumePicker.launch(intent) }.onFailure(vm::error)
+        } else vm.open(entry)
+    }
     val allFiles=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()){vm.refresh()}
     val notifications=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){}
     fun launchAllFiles() {runCatching { allFiles.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,Uri.parse("package:${context.packageName}"))) }.onFailure(vm::error)}
@@ -135,7 +154,12 @@ private val Blue=Color(0xFF007AFF)
     LaunchedEffect(incoming) {if(incomingView && incoming.size==1) {runCatching{withContext(Dispatchers.IO){s.stat(incoming.single())}}.onSuccess{preview=it}.onFailure(vm::error);clearIncoming()} }
     val owner=LocalLifecycleOwner.current
     DisposableEffect(owner) {val observer=LifecycleEventObserver { _,event ->if(event==Lifecycle.Event.ON_RESUME)vm.refresh()};owner.lifecycle.addObserver(observer);onDispose{owner.lifecycle.removeObserver(observer)}}
-    LaunchedEffect(a.loading,a.tab) {if(!a.loading){roots=vm.roots();trash=withContext(Dispatchers.IO){FileEngine(s).trashRecords()}}}
+    LaunchedEffect(a.loading,a.tab,a.locationsVersion) {
+        if(!a.loading) {
+            runCatching { vm.roots() }.onSuccess { roots=it }.onFailure(vm::error)
+            trash=withContext(Dispatchers.IO) { FileEngine(s).trashRecords() }
+        }
+    }
     LaunchedEffect(a.notice) {a.notice?.let{snack.showSnackbar(it);vm.notice(null)}}
     BackHandler(a.stack.isNotEmpty() || a.selecting || a.tab !in listOf("Обзор","Недавние") || a.query.isNotEmpty()) {
         if(a.stack.isEmpty() && !a.selecting && a.query.isEmpty())vm.tab("Обзор") else vm.back()
@@ -171,7 +195,7 @@ private val Blue=Color(0xFF007AFF)
                             DropdownMenuItem(text={Text(if(a.descending)"По возрастанию" else "По убыванию")},onClick={toolbar=false;vm.change{it.copy(descending=!it.descending)};vm.refresh()})
                             HorizontalDivider()
                             listOf("Системная","Светлая","Тёмная").forEach{t->DropdownMenuItem(text={Text("${if(t==a.theme)"✓ " else ""}$t тема")},onClick={toolbar=false;vm.theme(t)})}
-                            DropdownMenuItem(text={Text("Подключить папку / USB")},onClick={toolbar=false;treePicker.launch(null)})
+                            DropdownMenuItem(text={Text("Добавить папку")},onClick={toolbar=false;treePicker.launch(null)})
                             if(!Environment.isExternalStorageManager())DropdownMenuItem(text={Text("Разрешить доступ к памяти")},onClick={toolbar=false;launchAllFiles()})
                             DropdownMenuItem(text={Text("История операций")},onClick={toolbar=false;showOperations=true})
                             DropdownMenuItem(text={Text("Обновить")},onClick={toolbar=false;vm.refresh()})
@@ -216,8 +240,8 @@ private val Blue=Color(0xFF007AFF)
                 }
                 AnimatedContent(targetState=a,contentKey={it.current?.ref ?: it.tab},transitionSpec={fadeIn() togetherWith fadeOut()},modifier=Modifier.weight(1f),label="Folder") { folder ->
                     when {
-                        folder.tab=="Недавно удалённые" && folder.current==null -> TrashList(trash,onRestore={id->vm.operation("restore",listOf(id))},onChoose={id->destinationAction="restore" to listOf(id);vm.tab("Обзор")},onPurge={id->confirmTrash=listOf("trash:$id")})
-                        folder.current==null && folder.tab=="Обзор" -> BrowseHome(roots,folder.favorites,s,onOpen={vm.open(it)},onFavorites={vm.tab("Избранное")},onTrash={vm.tab("Недавно удалённые")},onConnect={treePicker.launch(null)},onAllFiles=::launchAllFiles,onUnlink={ref->s.prefs.edit().putStringSet("roots",s.strings("roots")-ref).apply();runCatching{s.resolver.releasePersistableUriPermission(s.uri(ref),Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)};vm.refresh()})
+                        folder.tab=="Недавно удалённые" && folder.current==null -> TrashList(trash,onRestore={id->vm.operation("restore",listOf(id))},onChoose={id->destinationAction="restore" to listOf(id);vm.tab("Обзор")},onPurge={ids->confirmTrash=ids.map { "trash:" + it }})
+                        folder.current==null && folder.tab=="Обзор" -> BrowseHome(roots,folder.favorites,s,onOpen={openLocation(it)},onFavorites={vm.tab("Избранное")},onTrash={vm.tab("Недавно удалённые")},onConnect={treePicker.launch(null)},onAllFiles=::launchAllFiles,onUnlink={ref->s.prefs.edit().putStringSet("roots",s.strings("roots")-ref).apply();runCatching{s.resolver.releasePersistableUriPermission(s.uri(ref),Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)};vm.refresh()})
                         else -> Box(Modifier.fillMaxSize()) {
                             if(folder.error!=null)Column(Modifier.align(Alignment.Center).padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Outlined.Lock,null,Modifier.size(40.dp));Text(folder.error!!,textAlign=TextAlign.Center);TextButton(onClick={treePicker.launch(null)}){Text("Выбрать папку")};TextButton(onClick={vm.refresh()}){Text("Повторить")}}
                             else if(folder.entries.isEmpty() && !folder.loading)Column(Modifier.align(Alignment.Center),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Outlined.FolderOpen,null,Modifier.size(64.dp),tint=colors.onSurfaceVariant);Text(if(folder.query.isNotBlank())"Ничего не найдено" else "Здесь пока пусто",color=colors.onSurfaceVariant)}
@@ -266,7 +290,7 @@ private val Blue=Color(0xFF007AFF)
         }
         confirmTrash?.let { refs ->
             val purge=refs.firstOrNull()?.startsWith("trash:")==true
-            AlertDialog(onDismissRequest={confirmTrash=null},title={Text(if(purge)"Удалить навсегда?" else "Переместить в корзину?")},text={Text(if(purge)"Резервная копия будет удалена без возможности восстановления." else "Элементов: ${refs.size}. Сначала будет сохранена и проверена копия. Корзина хранится в данных iFiles; очистка данных или удаление приложения уничтожит её.")},confirmButton={TextButton(onClick={
+            AlertDialog(onDismissRequest={confirmTrash=null},title={Text(if(purge)"Удалить навсегда?" else "Переместить в корзину?")},text={Text(if(purge)"Будет удалено навсегда: " + refs.size + ". Восстановить эти элементы будет невозможно." else "Элементов: ${refs.size}. Сначала будет сохранена и проверена копия. Корзина хранится в данных iFiles; очистка данных или удаление приложения уничтожит её.")},confirmButton={TextButton(onClick={
                 if(purge)vm.operation("purge",refs.map{it.removePrefix("trash:")}) else {
                     // Per-item parent references survive selections from Recent and Favorites.
                     refs.groupBy{s.parentOf(it) ?: s.local}.forEach{(p,group)->vm.operation("trash",group,sourceParent=p)}
@@ -317,20 +341,23 @@ private val Blue=Color(0xFF007AFF)
         item {Text("Места",fontSize=21.sp,fontWeight=FontWeight.Bold)}
         item {Surface(shape=RoundedCornerShape(12.dp)){Column {
             roots.forEachIndexed { i,e ->Row(Modifier.fillMaxWidth().clickable{onOpen(e)}.padding(start=16.dp,end=8.dp,top=10.dp,bottom=10.dp),verticalAlignment=Alignment.CenterVertically){
-                Icon(if(e.name=="На этом телефоне")Icons.Outlined.Smartphone else Icons.Outlined.Folder,null,tint=MaterialTheme.colorScheme.primary)
-                Text(e.name,Modifier.weight(1f).padding(horizontal=12.dp),maxLines=2)
+                Icon(if(e.volumeId!=null)Icons.Outlined.Usb else if(e.name=="На этом телефоне")Icons.Outlined.Smartphone else Icons.Outlined.Folder,null,tint=MaterialTheme.colorScheme.primary)
+                Column(Modifier.weight(1f).padding(horizontal=12.dp)) {
+                    Text(e.name,maxLines=2)
+                    if(e.requiresGrant)Text("Нажмите, чтобы разрешить доступ",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 if(e.ref in s.strings("roots"))IconButton(onClick={onUnlink(e.ref)}){Icon(Icons.Outlined.LinkOff,"Отключить папку")}
                 Icon(Icons.Outlined.ChevronRight,null,tint=MaterialTheme.colorScheme.onSurfaceVariant)
             };if(i<roots.lastIndex)HorizontalDivider(Modifier.padding(start=52.dp))}
             HorizontalDivider(Modifier.padding(start=52.dp))
-            TextButton(onClick=onConnect,Modifier.fillMaxWidth().padding(8.dp)){Icon(Icons.Outlined.Add,null);Text("Подключить папку или USB",Modifier.padding(start=8.dp))}
+            TextButton(onClick=onConnect,Modifier.fillMaxWidth().padding(8.dp)){Icon(Icons.Outlined.Add,null);Text("Добавить папку",Modifier.padding(start=8.dp))}
         }}}
         if(!Environment.isExternalStorageManager())item {Surface(shape=RoundedCornerShape(12.dp)){Column(Modifier.padding(16.dp)){
             Text("Общая память телефона",fontWeight=FontWeight.SemiBold)
             Text("Для разделов «На этом телефоне» и «Загрузки» разрешите доступ к пользовательским файлам. Можно работать и только с выбранными папками.",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=6.dp))
             TextButton(onClick=onAllFiles){Text("Разрешить доступ")}
         }}}
-        item {Text("Избранное",fontSize=21.sp,fontWeight=FontWeight.Bold)}
+        item {Text("Разделы",fontSize=21.sp,fontWeight=FontWeight.Bold)}
         item {Surface(shape=RoundedCornerShape(12.dp)){Column {
             Row(Modifier.fillMaxWidth().clickable(onClick=onFavorites).padding(16.dp),verticalAlignment=Alignment.CenterVertically){Icon(Icons.Outlined.Star,null,tint=MaterialTheme.colorScheme.primary);Text("Избранное",Modifier.weight(1f).padding(start=12.dp));Text("${favorites.size}",color=MaterialTheme.colorScheme.onSurfaceVariant);Icon(Icons.Outlined.ChevronRight,null)}
             HorizontalDivider(Modifier.padding(start=52.dp))
@@ -341,19 +368,59 @@ private val Blue=Color(0xFF007AFF)
         }}}}
     }
 }
-@Composable private fun TrashList(records: List<JSONObject>,onRestore:(String)->Unit,onChoose:(String)->Unit,onPurge:(String)->Unit) {
-    LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-        item {Text("Корзина iFiles. Автоматической очистки нет. После восстановления резервная копия остаётся до удаления вручную.",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
-        if(records.isEmpty())item{Text("Корзина пуста",Modifier.padding(vertical=24.dp))}
-        items(records,key={it.getString("id")}){r->Surface(shape=RoundedCornerShape(12.dp)) {Column(Modifier.padding(16.dp)){
-            Text(r.getString("name"),fontWeight=FontWeight.SemiBold)
-            Text(dateText(r.optLong("time")),fontSize=12.sp)
-            val state=r.optString("state")
-            Text(when(state){"copying"->"Незавершённая копия. Исходник не удалялся.";"verified"->"Копия проверена. Удаление исходника могло прерваться.";"source_retained"->"Исходник сохранён полностью или частично. Резервная копия доступна.";"restored"->"Восстановлено. Резервная копия сохранена.";else->"В корзине"},fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(Modifier.horizontalScroll(rememberScrollState())){if(state!="copying"){
-                TextButton(onClick={onRestore(r.getString("id"))}){Text("Восстановить")};TextButton(onClick={onChoose(r.getString("id"))}){Text("В другую папку")}
-            };TextButton(onClick={onPurge(r.getString("id"))}){Text("Удалить",color=MaterialTheme.colorScheme.error)}}
-        }}}
+@Composable private fun TrashList(records: List<JSONObject>,onRestore:(String)->Unit,onChoose:(String)->Unit,onPurge:(List<String>)->Unit) {
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val ids=records.map { it.getString("id") }.toSet()
+    LaunchedEffect(ids) { selected=selected.intersect(ids);if(ids.isEmpty())selecting=false }
+    fun toggle(id: String) { selected=if(id in selected)selected-id else selected+id }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal=12.dp)) {
+            if(selecting) {
+                TextButton(onClick={selected=ids}) { Text("Выбрать всё") }
+                TextButton(enabled=selected.isNotEmpty(),onClick={onPurge(selected.toList())}) {
+                    Text("Удалить выбранные навсегда",color=MaterialTheme.colorScheme.error)
+                }
+                TextButton(onClick={selecting=false;selected=emptySet()}) { Text("Готово") }
+            } else {
+                TextButton(enabled=ids.isNotEmpty(),onClick={selecting=true}) { Text("Выбрать") }
+                TextButton(enabled=ids.isNotEmpty(),onClick={onPurge(ids.toList())}) {
+                    Text("Удалить всё",color=MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+        if(selecting)Text("Выбрано: " + selected.size,Modifier.padding(horizontal=20.dp),fontSize=12.sp)
+        LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            item {Text("Элементы можно восстановить или удалить навсегда. Очистка корзины не затрагивает остальные файлы.",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+            if(records.isEmpty())item {Text("Корзина пуста",Modifier.padding(vertical=24.dp))}
+            items(records,key={it.getString("id")}) { r ->
+                val id=r.getString("id")
+                Surface(shape=RoundedCornerShape(12.dp),color=if(id in selected)MaterialTheme.colorScheme.primary.copy(alpha=.12f) else MaterialTheme.colorScheme.surface) {
+                    Column(Modifier.clickable(enabled=selecting) { toggle(id) }.padding(16.dp)) {
+                        Row(verticalAlignment=Alignment.CenterVertically) {
+                            if(selecting)Checkbox(checked=id in selected,onCheckedChange={toggle(id)})
+                            Text(r.getString("name"),Modifier.weight(1f),fontWeight=FontWeight.SemiBold)
+                        }
+                        Text(dateText(r.optLong("time")),fontSize=12.sp)
+                        val state=r.optString("state")
+                        Text(when(state) {
+                            "copying" -> "Незавершённая копия. Исходник не удалялся."
+                            "verified" -> "Копия проверена. Удаление исходника могло прерваться."
+                            "source_retained" -> "Исходник сохранён полностью или частично. Резервная копия доступна."
+                            "restored" -> "Восстановлено. Резервная копия сохранена."
+                            else -> "В корзине"
+                        },fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        if(!selecting)Row(Modifier.horizontalScroll(rememberScrollState())) {
+                            if(state!="copying") {
+                                TextButton(onClick={onRestore(id)}) {Text("Восстановить")}
+                                TextButton(onClick={onChoose(id)}) {Text("В другую папку")}
+                            }
+                            TextButton(onClick={onPurge(listOf(id))}) {Text("Удалить",color=MaterialTheme.colorScheme.error)}
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 @Composable private fun Properties(e: Entry,s: Storage,close:()->Unit) {
