@@ -112,7 +112,7 @@ class MediaActivity:ComponentActivity() {
     }
     fun enterPip() {
         if(!video || !packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE))return
-        runCatching {enterPictureInPictureMode(pipParams)}.onFailure{error="Режим «картинка в картинке» недоступен"}
+        runCatching {enterPictureInPictureMode(pipParams)}.onSuccess{if(!it)error="Android не разрешил режим «картинка в картинке»"}.onFailure{error="Режим «картинка в картинке» недоступен"}
     }
     override fun onUserLeaveHint(){super.onUserLeaveHint();if(Build.VERSION.SDK_INT<31 && canPip)enterPip()}
     override fun onPictureInPictureModeChanged(inPip:Boolean,newConfig:Configuration){super.onPictureInPictureModeChanged(inPip,newConfig);pip=inPip}

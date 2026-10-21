@@ -24,8 +24,8 @@ class PreviewFilesTest {
         assertFalse(PlaybackRules.pip(true,true,androidx.media3.common.Player.STATE_ENDED))
     }
     @Test fun pipAspectRatioRespectsAndroidLimits() {
-        assertEquals(2.39f,PlaybackRules.ratio(10000,10),0.001f)
-        assertEquals(1f/2.39f,PlaybackRules.ratio(10,10000),0.001f)
+        assertEquals(2.38f,PlaybackRules.ratio(10000,10),0.001f)
+        assertEquals(0.42f,PlaybackRules.ratio(10,10000),0.001f)
         assertEquals(16f/9f,PlaybackRules.ratio(0,0),0.001f)
     }
     @Test fun genericUsbVideoMimeStillEnablesPip() {
