@@ -68,31 +68,78 @@ object PreviewFiles {
     fun packageText(file: File,archive: Boolean,checkpoint: ()->Unit): String {
         val result=StringBuilder();var expanded=0L;var inspected=0
         ZipFile(file).use { zip ->
+            fun xml(bytes: ByteArray)=Xml.newPullParser().apply {
+                setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES,true)
+                setInput(ByteArrayInputStream(bytes),null)
+            }
+            fun entryBytes(name: String):ByteArray? {
+                val entry=zip.getEntry(name) ?: return null
+                val bytes=zip.getInputStream(entry).use {read(it,4*1024*1024+1)}
+                expanded+=bytes.size
+                require(bytes.size<=4*1024*1024 && expanded<=16*1024*1024){"Документ слишком велик для текстового просмотра"}
+                return bytes
+            }
+            val strings=ArrayList<String>()
+            if(!archive)entryBytes("xl/sharedStrings.xml")?.let { bytes ->
+                val parser=xml(bytes);var value=StringBuilder()
+                while(parser.eventType!=XmlPullParser.END_DOCUMENT) {
+                    checkpoint()
+                    when(parser.eventType) {
+                        XmlPullParser.DOCDECL -> throw IOException("Определения XML не поддерживаются")
+                        XmlPullParser.START_TAG -> if(parser.name=="si")value=StringBuilder()
+                        XmlPullParser.TEXT -> value.append(parser.text)
+                        XmlPullParser.END_TAG -> if(parser.name=="si") {require(strings.size<100000){"Слишком много строк в таблице"};strings+=value.toString()}
+                    }
+                    parser.nextToken()
+                }
+            }
             val entries=zip.entries()
             while(entries.hasMoreElements()) {
                 checkpoint();require(++inspected<=10000){"В архиве больше 10 000 элементов"}
                 val entry=entries.nextElement();val name=entry.name
                 if(archive) {result.append(name).append(if(entry.isDirectory)"/" else " (${entry.size} байт)").append('\n')}
-                else if(!entry.isDirectory && (name=="word/document.xml" || name=="xl/sharedStrings.xml" || name.startsWith("xl/worksheets/sheet") || name.startsWith("ppt/slides/slide") || name=="content.xml" || name.endsWith(".xhtml") || name.endsWith(".html"))) {
-                    val bytes=zip.getInputStream(entry).use { read(it,4*1024*1024+1) };expanded+=bytes.size
-                    require(bytes.size<=4*1024*1024 && expanded<=16*1024*1024){"Документ слишком велик для текстового просмотра"}
+                else if(!entry.isDirectory && (name=="word/document.xml" || name.startsWith("xl/worksheets/sheet") || name.startsWith("ppt/slides/slide") || name=="content.xml" || name.endsWith(".xhtml") || name.endsWith(".html"))) {
+                    val bytes=entryBytes(name) ?: continue
                     result.append('\n').append(name).append('\n')
-                    val parser=Xml.newPullParser().apply { setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES,true);setInput(ByteArrayInputStream(bytes),null) }
+                    val parser=xml(bytes)
+                    val sheet=name.startsWith("xl/worksheets/")
+                    var shared=false;var inValue=false
                     while(parser.eventType!=XmlPullParser.END_DOCUMENT) {
                         checkpoint()
                         when(parser.eventType) {
-                            XmlPullParser.DOCDECL -> throw IOException("Внешние определения XML не поддерживаются")
-                            XmlPullParser.TEXT -> if(!parser.text.isNullOrBlank())result.append(parser.text)
-                            XmlPullParser.END_TAG -> if(parser.name in setOf("p","tr","row","c","si","h1","h2","li","br"))result.append('\n')
+                            XmlPullParser.DOCDECL -> throw IOException("Определения XML не поддерживаются")
+                            XmlPullParser.START_TAG -> {
+                                if(sheet && parser.name=="c")shared=parser.getAttributeValue(null,"t")=="s"
+                                if(sheet && parser.name=="v")inValue=true
+                            }
+                            XmlPullParser.TEXT -> if(!parser.text.isNullOrBlank()) {
+                                result.append(if(sheet && shared && inValue)strings.getOrNull(parser.text.toIntOrNull() ?: -1) ?: parser.text else parser.text)
+                            }
+                            XmlPullParser.END_TAG -> when(parser.name) {
+                                "v" -> inValue=false
+                                "c","tc","table-cell" -> result.append('\t')
+                                "p","tr","row","table-row","si","h1","h2","li","br" -> result.append('\n')
+                            }
                         }
                         if(result.length>TEXT_LIMIT)break
-                        parser.next()
+                        parser.nextToken()
                     }
                 }
                 if(result.length>TEXT_LIMIT)break
             }
         }
         return if(result.isBlank())"В документе нет доступного текста. Форматирование и встроенные изображения здесь не отображаются." else result.take(TEXT_LIMIT).toString() + if(result.length>TEXT_LIMIT)"\n…Просмотр ограничен 1 МБ." else ""
+    }
+    /** Media containers may seek; materialize pipe-only providers, keep normal USB files streaming. */
+    fun mediaCopy(s: Storage,e: Entry,checkpoint: ()->Unit):File? {
+        if(s.isFile(e.ref))return null
+        val seekable=s.resolver.openFileDescriptor(s.uri(e.ref),"r")?.use { fd ->
+            try {android.system.Os.lseek(fd.fileDescriptor,0,android.system.OsConstants.SEEK_CUR);true}
+            catch(ex: android.system.ErrnoException){false}
+        } ?: throw IOException("Нет доступа к медиафайлу")
+        if(seekable)return null
+        val f=File.createTempFile("media-",".tmp",s.context.cacheDir)
+        return copy(s.input(e.ref),f,e.size,checkpoint)
     }
     fun hex(bytes: ByteArray)=bytes.toList().chunked(16).mapIndexed { row, data ->
         "%08X  ".format(row*16)+data.joinToString(" "){"%02X".format(it.toInt() and 255)}

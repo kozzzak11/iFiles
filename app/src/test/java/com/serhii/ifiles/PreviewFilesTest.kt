@@ -80,6 +80,15 @@ class PreviewFilesTest {
         val f=archive("word/document.xml" to "<w:document xmlns:w=\"urn:test\"><w:p><w:t>Привет USB</w:t></w:p></w:document>")
         assertTrue(PreviewFiles.packageText(f,false){}.contains("Привет USB"));assertTrue(PreviewFiles.packageText(f,true){}.contains("word/document.xml"))
     }
+    @Test fun spreadsheetResolvesSharedStringValues() {
+        val f=archive("xl/sharedStrings.xml" to "<sst><si><t>Имя</t></si><si><t>Сергей</t></si></sst>","xl/worksheets/sheet1.xml" to "<worksheet><row><c t=\"s\"><v>0</v></c><c t=\"s\"><v>1</v></c><c><v>42</v></c></row></worksheet>")
+        val text=PreviewFiles.packageText(f,false){}
+        assertTrue(text.contains("Имя"));assertTrue(text.contains("Сергей"));assertTrue(text.contains("42"))
+    }
+    @Test fun xmlDtdIsRejected() {
+        val f=archive("word/document.xml" to "<!DOCTYPE doc [<!ENTITY x \"not allowed\">]><doc>&x;</doc>")
+        assertThrows(IOException::class.java){PreviewFiles.packageText(f,false){}}
+    }
     @Test fun compressedXmlIsBounded() {
         val f=archive("word/document.xml" to "<doc>${"x".repeat(4*1024*1024+2)}</doc>")
         assertThrows(IllegalArgumentException::class.java){PreviewFiles.packageText(f,false){}}

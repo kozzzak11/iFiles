@@ -150,14 +150,14 @@ class Storage(val context: Context) {
     fun shareUri(ref: String): Uri = if(isFile(ref)) FileProvider.getUriForFile(context,"${context.packageName}.files",file(ref)) else uri(ref)
     // FileProvider external-path covers primary storage only. Stage USB files for external apps.
     // Internal decoders/player use the original URI and never need FileProvider.
-    fun externalUri(ref: String): Uri {
+    fun externalUri(ref: String,checkpoint: ()->Unit = {}): Uri {
         if(!isFile(ref))return uri(ref)
         return try { shareUri(ref) } catch(e: IllegalArgumentException) {
             val entry=stat(ref)
             val folder=File(context.cacheDir,"shared/${UUID.randomUUID()}").apply { mkdirs() }
             try {
                 val copy=File(folder,Names.check(entry.name))
-                PreviewFiles.copy(input(ref),copy,entry.size) {}
+                PreviewFiles.copy(input(ref),copy,entry.size,checkpoint)
                 FileProvider.getUriForFile(context,"${context.packageName}.files",copy)
             } catch(e: Exception) { folder.deleteRecursively();throw e }
         }

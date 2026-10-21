@@ -28,7 +28,12 @@ class PipePreviewProvider:ContentProvider() {
     override fun update(u:Uri,v:ContentValues?,s:String?,a:Array<out String>?)=0
     override fun openFile(uri:Uri,mode:String):ParcelFileDescriptor {
         require(mode=="r")
-        val bytes=if(uri.lastPathSegment=="pdf")PdfDocument().use { document ->
+        val bytes=if(uri.lastPathSegment=="wav") {
+            java.nio.ByteBuffer.allocate(44+16000).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
+                put("RIFF".toByteArray());putInt(36+16000);put("WAVEfmt ".toByteArray());putInt(16);putShort(1.toShort());putShort(1.toShort());putInt(8000);putInt(16000);putShort(2.toShort());putShort(16.toShort());put("data".toByteArray());putInt(16000)
+                repeat(8000){putShort((kotlin.math.sin(it*2*Math.PI*440/8000)*8000).toInt().toShort())}
+            }.array()
+        } else if(uri.lastPathSegment=="pdf")PdfDocument().use { document ->
             val page=document.startPage(PdfDocument.PageInfo.Builder(300,400,1).create())
             page.canvas.drawColor(Color.WHITE);page.canvas.drawText("USB PDF",30f,50f,android.graphics.Paint().apply{color=Color.BLACK;textSize=20f})
             document.finishPage(page)
@@ -56,6 +61,32 @@ class NativePreviewTest {
             assertArrayEquals(before,f.readBytes())
             assertEquals("pdf",PreviewFiles.kind(s.stat(f.toURI().toString()),before.take(512).toByteArray()))
         } finally {f.delete()}
+    }
+    @Test fun playerPreparesLocalAndStreamingProviderAudio() {
+        val s=Storage(context);val ref="content://com.serhii.ifiles.test.preview/wav"
+        val e=Entry(ref,"Sound.wav",false,mime="audio/wav")
+        val staged=PreviewFiles.mediaCopy(s,e){}
+        assertNotNull("Pipe sources must become seekable",staged)
+        try {
+            for(uri in listOf(Uri.fromFile(staged),s.uri(staged!!.toURI().toString()))) {
+                val ready=java.util.concurrent.CountDownLatch(1)
+                val failure=java.util.concurrent.atomic.AtomicReference<Throwable?>()
+                var player:androidx.media3.exoplayer.ExoPlayer?=null
+                try {
+                    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                        player=androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
+                            addListener(object:androidx.media3.common.Player.Listener {
+                                override fun onPlaybackStateChanged(state:Int){if(state==androidx.media3.common.Player.STATE_READY)ready.countDown()}
+                                override fun onPlayerError(error:androidx.media3.common.PlaybackException){failure.set(error);ready.countDown()}
+                            })
+                            setMediaItem(androidx.media3.common.MediaItem.fromUri(uri));prepare()
+                        }
+                    }
+                    assertTrue("Audio preparation timed out",ready.await(20,java.util.concurrent.TimeUnit.SECONDS))
+                    assertNull("Player error: ${failure.get()}",failure.get())
+                } finally {InstrumentationRegistry.getInstrumentation().runOnMainSync{player?.release()}}
+            }
+        } finally {staged?.delete()}
     }
     @Test fun realImageDecoderAndThumbnailReadLocalAndPipe() {
         val s=Storage(context);val uri=Uri.parse("content://com.serhii.ifiles.test.preview/png")

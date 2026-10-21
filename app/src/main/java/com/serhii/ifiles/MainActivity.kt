@@ -139,7 +139,7 @@ private val Blue=Color(0xFF007AFF)
     fun clipboard(refs: List<String>,move: Boolean) {clip=refs;cut=move;s.prefs.edit().putString("clipboard",JSONArray(refs).toString()).putBoolean("cut",move).apply();vm.change{it.copy(selected=emptySet(),selecting=false)};vm.notice("Откройте папку назначения и нажмите «Вставить»")}
     fun external(e: Entry,share: Boolean) {scope.launch {
         runCatching {
-            val u=withContext(Dispatchers.IO){s.externalUri(e.ref)}
+            val u=withContext(Dispatchers.IO){s.externalUri(e.ref){ensureActive()}}
             val intent=if(share)Intent(Intent.ACTION_SEND).setType(e.mime).putExtra(Intent.EXTRA_STREAM,u) else Intent(Intent.ACTION_VIEW).setDataAndType(u,e.mime)
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);intent.clipData=ClipData.newRawUri(e.name,u)
             context.startActivity(Intent.createChooser(intent,if(share)"Поделиться" else "Открыть с помощью"))
@@ -147,7 +147,7 @@ private val Blue=Color(0xFF007AFF)
     }}
     fun shareMany(refs: List<String>) {scope.launch {
         runCatching {
-            val uris=ArrayList(withContext(Dispatchers.IO){refs.map{s.externalUri(it)}})
+            val uris=ArrayList(withContext(Dispatchers.IO){refs.map{s.externalUri(it){ensureActive()}}})
             val intent=Intent(Intent.ACTION_SEND_MULTIPLE).setType("*/*").putParcelableArrayListExtra(Intent.EXTRA_STREAM,uris).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             intent.clipData=ClipData.newRawUri("Файлы",uris.first()).apply {uris.drop(1).forEach{addItem(ClipData.Item(it))}}
             context.startActivity(Intent.createChooser(intent,"Поделиться"))

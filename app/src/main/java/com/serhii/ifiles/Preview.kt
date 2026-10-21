@@ -177,9 +177,17 @@ object Thumbnails {
         val listener=object: Player.Listener {override fun onPlayerError(e: PlaybackException){error=e.localizedMessage ?: "Ошибка воспроизведения"}}
         val observer=LifecycleEventObserver { _,event ->if(event==Lifecycle.Event.ON_STOP)player.pause() }
         player.addListener(listener);owner.lifecycle.addObserver(observer)
-        try {player.setMediaItem(MediaItem.fromUri(s.uri(e.ref)));player.prepare();player.playWhenReady=true}
-        catch(ex: Exception){error=ex.message ?: "Не удалось открыть медиафайл"}
         onDispose {owner.lifecycle.removeObserver(observer);player.release()}
+    }
+    LaunchedEffect(player) {
+        var copy:File?=null
+        try {
+            copy=withContext(Dispatchers.IO){PreviewFiles.mediaCopy(s,e){ensureActive()}}
+            player.setMediaItem(MediaItem.fromUri(copy?.let { android.net.Uri.fromFile(it) } ?: s.uri(e.ref)))
+            player.prepare();player.playWhenReady=true
+            awaitCancellation()
+        } catch(ex: CancellationException){throw ex} catch(ex: Exception){error=ex.message ?: "Не удалось открыть медиафайл"}
+        finally {withContext(NonCancellable+Dispatchers.IO){copy?.delete()}}
     }
     if(error!=null)Text(error!!) else AndroidView(factory={PlayerView(it).apply { this.player=player;useController=true }},modifier=Modifier.fillMaxSize())
 }
