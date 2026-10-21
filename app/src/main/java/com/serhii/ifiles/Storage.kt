@@ -67,6 +67,10 @@ class Storage(val context: Context) {
     fun isFile(ref: String) = uri(ref).scheme == "file"
     fun file(ref: String) = File(java.net.URI(ref))
     fun mime(name: String) = MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
+    fun documentMime(name: String,provided: String): String {
+        val guessed=mime(name)
+        return if(provided in setOf("application/octet-stream","application/unknown","binary/octet-stream") && guessed!="application/octet-stream")guessed else provided
+    }
     fun stat(ref: String): Entry {
         if (isFile(ref)) {
             val f = file(ref)
@@ -80,13 +84,13 @@ class Storage(val context: Context) {
             resolver.query(docUri,cols,android.os.Bundle.EMPTY,null)?.use { c ->
                 if(c.moveToFirst()) {
                     val type=c.getString(1) ?: "application/octet-stream";val dir=type==DC.Document.MIME_TYPE_DIR
-                    return Entry(docUri.toString(),c.getString(0) ?: "Документ",dir,if(dir || c.isNull(2)) -1 else c.getLong(2),if(c.isNull(3))0 else c.getLong(3),type)
+                    return Entry(docUri.toString(),c.getString(0) ?: "Документ",dir,if(dir || c.isNull(2)) -1 else c.getLong(2),if(c.isNull(3))0 else c.getLong(3),if(dir)type else documentMime(c.getString(0) ?: "",type))
                 }
             }
             error("Нет доступа к документу")
         }
         resolver.query(u, arrayOf(OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE),android.os.Bundle.EMPTY,null)?.use { c ->
-            if(c.moveToFirst()) return Entry(ref,c.getString(0) ?: "Файл",false,if(c.isNull(1)) -1 else c.getLong(1),0,resolver.getType(u) ?: "application/octet-stream")
+            if(c.moveToFirst()) return Entry(ref,c.getString(0) ?: "Файл",false,if(c.isNull(1)) -1 else c.getLong(1),0,documentMime(c.getString(0) ?: "",resolver.getType(u) ?: "application/octet-stream"))
         }
         error("Файл не найден")
     }
@@ -104,7 +108,7 @@ class Storage(val context: Context) {
         resolver.query(children,cols,android.os.Bundle.EMPTY,null)?.use { c ->
             while(c.moveToNext()) {
                 val type = c.getString(2) ?: "application/octet-stream"
-                result += Entry(DC.buildDocumentUriUsingTree(root,c.getString(0)).toString(),c.getString(1) ?: "Файл", type==DC.Document.MIME_TYPE_DIR,if(c.isNull(3)) -1 else c.getLong(3), if(c.isNull(4)) 0 else c.getLong(4),type)
+                result += Entry(DC.buildDocumentUriUsingTree(root,c.getString(0)).toString(),c.getString(1) ?: "Файл", type==DC.Document.MIME_TYPE_DIR,if(c.isNull(3)) -1 else c.getLong(3), if(c.isNull(4)) 0 else c.getLong(4),if(type==DC.Document.MIME_TYPE_DIR)type else documentMime(c.getString(1) ?: "",type))
             }
         } ?: error("Не удалось прочитать папку")
         result.forEach{parents.put(it.ref,ref)}

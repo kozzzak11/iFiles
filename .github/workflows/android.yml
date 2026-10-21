@@ -3,6 +3,9 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
@@ -64,6 +67,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          LATEST=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$LATEST" != "$GITHUB_SHA" ]; then
+            echo "A newer commit exists; skipping publication."
+            exit 0
+          fi
           VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
           test -n "$VERSION"
           cp app/build/outputs/apk/release/app-release.apk iFiles.apk

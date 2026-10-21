@@ -182,7 +182,7 @@ object Thumbnails {
     LaunchedEffect(player) {
         var copy:File?=null
         try {
-            copy=withContext(Dispatchers.IO){PreviewFiles.mediaCopy(s,e){ensureActive()}}
+            withContext(Dispatchers.IO){copy=PreviewFiles.mediaCopy(s,e){ensureActive()}}
             player.setMediaItem(MediaItem.fromUri(copy?.let { android.net.Uri.fromFile(it) } ?: s.uri(e.ref)))
             player.prepare();player.playWhenReady=true
             awaitCancellation()

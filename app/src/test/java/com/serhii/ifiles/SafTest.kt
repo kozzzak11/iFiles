@@ -17,6 +17,7 @@ import java.io.File
 /** Test DocumentsProvider backed by a real temporary filesystem, not mocked Storage methods. */
 class TestDocumentsProvider: DocumentsProvider() {
     lateinit var base: File
+    var denyDelete=false
     override fun onCreate()=true
     private val columns=arrayOf(DC.Document.COLUMN_DOCUMENT_ID,DC.Document.COLUMN_DISPLAY_NAME,DC.Document.COLUMN_MIME_TYPE,DC.Document.COLUMN_SIZE,DC.Document.COLUMN_LAST_MODIFIED,DC.Document.COLUMN_FLAGS)
     private fun file(id: String)=if(id=="root")base else File(base,id.removePrefix("root/"))
@@ -37,7 +38,7 @@ class TestDocumentsProvider: DocumentsProvider() {
         check(if(mimeType==DC.Document.MIME_TYPE_DIR)f.mkdir() else f.createNewFile())
         return id(f)
     }
-    override fun deleteDocument(documentId: String){check(file(documentId).deleteRecursively())}
+    override fun deleteDocument(documentId: String){if(denyDelete)throw SecurityException("Read-only USB");check(file(documentId).deleteRecursively())}
     override fun renameDocument(documentId: String,displayName: String): String {val from=file(documentId);val to=File(from.parentFile,displayName);check(from.renameTo(to));return id(to)}
     override fun isChildDocument(parentDocumentId: String,documentId: String)=documentId.startsWith("$parentDocumentId/")
 }
@@ -46,10 +47,11 @@ class TestDocumentsProvider: DocumentsProvider() {
 class SafTest {
     private lateinit var s: Storage
     private lateinit var base: File
+    private lateinit var provider: TestDocumentsProvider
     @Before fun setup() {
         s=Storage(ApplicationProvider.getApplicationContext())
         base=File(s.context.cacheDir,"saf-${System.nanoTime()}").apply{mkdirs()}
-        val provider=TestDocumentsProvider().apply{this.base=this@SafTest.base}
+        provider=TestDocumentsProvider().apply{this.base=this@SafTest.base}
         provider.attachInfo(s.context,android.content.pm.ProviderInfo().apply{authority="ifiles.test.documents";grantUriPermissions=true;exported=true;readPermission="android.permission.MANAGE_DOCUMENTS";writePermission="android.permission.MANAGE_DOCUMENTS"})
         ShadowContentResolver.registerProviderInternal("ifiles.test.documents",provider)
     }
@@ -85,6 +87,30 @@ class SafTest {
         s.output(sidecar).use{it.write(byteArrayOf(0,5,22,7))}
         val listed=s.list(nested)
         assertEquals(original,PreviewFiles.resolve(s,listed.first{it.name.startsWith("._")}).ref)
+    }
+    @Test fun safTrashRestoreRoundTripKeepsVerifiedBytes() {
+        val tree=DC.buildTreeDocumentUri("ifiles.test.documents","root").toString()
+        val ref=s.create(tree,"USB.txt",false)
+        val bytes=ByteArray(300000){(it*31).toByte()};s.output(ref).use{it.write(bytes)}
+        val engine=FileEngine(s)
+        engine.trash(ref,tree)
+        val record=engine.trashRecords().first{it.getString("source")==ref}
+        assertFalse(File(base,"USB.txt").exists())
+        engine.restore(record.getString("id"),tree)
+        assertArrayEquals(bytes,File(base,"USB.txt").readBytes())
+        engine.purge(record.getString("id"));assertArrayEquals(bytes,File(base,"USB.txt").readBytes())
+    }
+    @Test fun deniedUsbDeleteKeepsOriginalAndVerifiedTrashBackup() {
+        val tree=DC.buildTreeDocumentUri("ifiles.test.documents","root").toString()
+        val ref=s.create(tree,"USB protected.txt",false);val bytes="keep my original".toByteArray()
+        s.output(ref).use{it.write(bytes)};provider.denyDelete=true
+        val engine=FileEngine(s)
+        assertThrows(SecurityException::class.java){engine.trash(ref,tree)}
+        assertArrayEquals(bytes,s.input(ref).use{it.readBytes()})
+        val record=engine.trashRecords().first{it.getString("source")==ref}
+        assertEquals("source_retained",record.getString("state"))
+        assertArrayEquals(bytes,s.input(record.getString("backup")).use{it.readBytes()})
+        engine.purge(record.getString("id"))
     }
     @Test fun rejectSafFolderIntoItself() {
         val tree=DC.buildTreeDocumentUri("ifiles.test.documents","root").toString()
