@@ -33,11 +33,14 @@ class PipePreviewProvider:ContentProvider() {
                 put("RIFF".toByteArray());putInt(36+16000);put("WAVEfmt ".toByteArray());putInt(16);putShort(1.toShort());putShort(1.toShort());putInt(8000);putInt(16000);putShort(2.toShort());putShort(16.toShort());put("data".toByteArray());putInt(16000)
                 repeat(8000){putShort((kotlin.math.sin(it*2*Math.PI*440/8000)*8000).toInt().toShort())}
             }.array()
-        } else if(uri.lastPathSegment=="pdf")PdfDocument().use { document ->
+        } else if(uri.lastPathSegment=="pdf") {
+            val document=PdfDocument()
+            try {
             val page=document.startPage(PdfDocument.PageInfo.Builder(300,400,1).create())
             page.canvas.drawColor(Color.WHITE);page.canvas.drawText("USB PDF",30f,50f,android.graphics.Paint().apply{color=Color.BLACK;textSize=20f})
             document.finishPage(page)
             ByteArrayOutputStream().also{document.writeTo(it)}.toByteArray()
+            } finally {document.close()}
         } else ByteArrayOutputStream().also {out->Bitmap.createBitmap(32,24,Bitmap.Config.ARGB_8888).also{b->b.eraseColor(Color.RED);b.compress(Bitmap.CompressFormat.PNG,100,out);b.recycle()}}.toByteArray()
         val pipe=ParcelFileDescriptor.createPipe()
         Thread {try{ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use{it.write(bytes)}}catch(_:Exception){}}.start()

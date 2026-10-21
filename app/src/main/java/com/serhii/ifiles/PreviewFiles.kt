@@ -100,7 +100,13 @@ object PreviewFiles {
                 if(archive) {result.append(name).append(if(entry.isDirectory)"/" else " (${entry.size} байт)").append('\n')}
                 else if(!entry.isDirectory && (name=="word/document.xml" || name.startsWith("xl/worksheets/sheet") || name.startsWith("ppt/slides/slide") || name=="content.xml" || name.endsWith(".xhtml") || name.endsWith(".html"))) {
                     val bytes=entryBytes(name) ?: continue
-                    result.append('\n').append(name).append('\n')
+                    val label=when {
+                        name.startsWith("xl/worksheets/sheet") -> "Лист " + name.substringAfterLast("sheet").substringBefore('.')
+                        name.startsWith("ppt/slides/slide") -> "Слайд " + name.substringAfterLast("slide").substringBefore('.')
+                        name.endsWith(".xhtml") || name.endsWith(".html") -> "Раздел " + (inspected)
+                        else -> ""
+                    }
+                    if(label.isNotEmpty())result.append('\n').append(label).append('\n')
                     val parser=xml(bytes)
                     val sheet=name.startsWith("xl/worksheets/")
                     var shared=false;var inValue=false
