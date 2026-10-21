@@ -17,6 +17,21 @@ class PreviewFilesTest {
     @Before fun setup(){s=Storage(ApplicationProvider.getApplicationContext());root=File(s.context.cacheDir,"preview-${System.nanoTime()}").apply{mkdirs()}}
     @After fun cleanup(){root.deleteRecursively()}
     private fun file(name: String,bytes: ByteArray)=File(root,name).apply {writeBytes(bytes)}
+    @Test fun pipOnlyAutoEntersForActiveVideo() {
+        assertTrue(PlaybackRules.pip(true,true,androidx.media3.common.Player.STATE_READY))
+        assertFalse(PlaybackRules.pip(false,true,androidx.media3.common.Player.STATE_READY))
+        assertFalse(PlaybackRules.pip(true,false,androidx.media3.common.Player.STATE_READY))
+        assertFalse(PlaybackRules.pip(true,true,androidx.media3.common.Player.STATE_ENDED))
+    }
+    @Test fun pipAspectRatioRespectsAndroidLimits() {
+        assertEquals(2.39f,PlaybackRules.ratio(10000,10),0.001f)
+        assertEquals(1f/2.39f,PlaybackRules.ratio(10,10000),0.001f)
+        assertEquals(16f/9f,PlaybackRules.ratio(0,0),0.001f)
+    }
+    @Test fun genericUsbVideoMimeStillEnablesPip() {
+        assertTrue(PlaybackRules.video(Entry("x","Clip.MOV",false)))
+        assertFalse(PlaybackRules.video(Entry("x","Music.mp3",false,mime="audio/mpeg")))
+    }
     @Test fun appleDoubleResolvesOriginalWithoutChangingEitherFile() {
         val data="%PDF-1.7 original".toByteArray();val metadata=byteArrayOf(0,5,22,7,0,2,0,0)
         val original=file("Резюме.pdf",data);val sidecar=file("._Резюме.pdf",metadata)

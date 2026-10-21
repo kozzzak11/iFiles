@@ -137,9 +137,9 @@ object PreviewFiles {
         return if(result.isBlank())"В документе нет доступного текста. Форматирование и встроенные изображения здесь не отображаются." else result.take(TEXT_LIMIT).toString() + if(result.length>TEXT_LIMIT)"\n…Просмотр ограничен 1 МБ." else ""
     }
     /** Media containers may seek; materialize pipe-only providers, keep normal USB files streaming. */
-    fun mediaCopy(s: Storage,e: Entry,checkpoint: ()->Unit):File? {
+    fun mediaCopy(s: Storage,e: Entry,forceCopy:Boolean=false,checkpoint: ()->Unit):File? {
         if(s.isFile(e.ref))return null
-        val seekable=s.resolver.openFileDescriptor(s.uri(e.ref),"r")?.use { fd ->
+        val seekable=if(forceCopy)false else s.resolver.openFileDescriptor(s.uri(e.ref),"r")?.use { fd ->
             try {android.system.Os.lseek(fd.fileDescriptor,0,android.system.OsConstants.SEEK_CUR);true}
             catch(ex: android.system.ErrnoException){false}
         } ?: throw IOException("Нет доступа к медиафайлу")

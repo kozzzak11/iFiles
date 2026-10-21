@@ -120,7 +120,10 @@ object Thumbnails {
                         actual==null -> CircularProgressIndicator()
                         kind=="appledouble" -> Text("Служебный файл macOS. Он не содержит сам документ.",Modifier.padding(24.dp))
                         kind=="image" -> ImagePreview(actual.copy(mime="image/preview"),s)
-                        kind=="media" -> MediaPreview(actual,s)
+                        kind=="media" -> {
+                            LaunchedEffect(actual.ref) {s.context.startActivity(MediaActivity.intent(s.context,actual).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));onClose()}
+                            CircularProgressIndicator()
+                        }
                         kind=="pdf" -> PdfPreview(actual,s)
                         kind=="text" -> TextPreview(actual,s)
                         else -> DocumentPreview(actual,s,kind)
@@ -167,36 +170,6 @@ object Thumbnails {
         }} catch(ex: CancellationException){throw ex} catch(ex: Exception){error=ex.message ?: "Не удалось прочитать документ"}
     }
     PreviewText(text,error)
-}
-@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-@Composable private fun MediaPreview(e: Entry,s: Storage) {
-    val context=LocalContext.current;var error by remember(e.ref){mutableStateOf<String?>(null)}
-    var loading by remember(e.ref){mutableStateOf(true)}
-    val player=remember(e.ref){ExoPlayer.Builder(context).build()}
-    val owner=LocalLifecycleOwner.current
-    DisposableEffect(player,owner) {
-        val listener=object: Player.Listener {
-            override fun onPlaybackStateChanged(state: Int){loading=state==Player.STATE_IDLE || state==Player.STATE_BUFFERING}
-            override fun onPlayerError(e: PlaybackException){error=e.localizedMessage ?: "Ошибка воспроизведения"}
-        }
-        val observer=LifecycleEventObserver { _,event ->if(event==Lifecycle.Event.ON_STOP)player.pause() }
-        player.addListener(listener);owner.lifecycle.addObserver(observer)
-        onDispose {owner.lifecycle.removeObserver(observer);player.release()}
-    }
-    LaunchedEffect(player) {
-        var copy:File?=null
-        try {
-            withContext(Dispatchers.IO){copy=PreviewFiles.mediaCopy(s,e){ensureActive()}}
-            player.setMediaItem(MediaItem.fromUri(copy?.let { android.net.Uri.fromFile(it) } ?: s.uri(e.ref)))
-            player.prepare();player.playWhenReady=true
-            awaitCancellation()
-        } catch(ex: CancellationException){throw ex} catch(ex: Exception){error=ex.message ?: "Не удалось открыть медиафайл"}
-        finally {withContext(NonCancellable+Dispatchers.IO){copy?.delete()}}
-    }
-    if(error!=null)Text(error!!,Modifier.padding(24.dp)) else Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
-        AndroidView(factory={PlayerView(it).apply { this.player=player;useController=true }},modifier=Modifier.fillMaxSize())
-        if(loading)Surface(shape=MaterialTheme.shapes.medium) {Row(Modifier.padding(16.dp),verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(24.dp));Text("Подготовка файла…",Modifier.padding(start=12.dp))}}
-    }
 }
 @Composable private fun PdfPreview(e: Entry,s: Storage) {
     var page by remember(e.ref){mutableIntStateOf(0)};var count by remember(e.ref){mutableIntStateOf(0)}
