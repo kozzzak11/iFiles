@@ -148,6 +148,20 @@ class Storage(val context: Context) {
         check(if(isFile(ref)) file(ref).delete() else DC.deleteDocument(resolver,uri(ref))) { "Не удалось удалить исходник; проверенная копия сохранена" }
     }
     fun shareUri(ref: String): Uri = if(isFile(ref)) FileProvider.getUriForFile(context,"${context.packageName}.files",file(ref)) else uri(ref)
+    // FileProvider external-path covers primary storage only. Stage USB files for external apps.
+    // Internal decoders/player use the original URI and never need FileProvider.
+    fun externalUri(ref: String): Uri {
+        if(!isFile(ref))return uri(ref)
+        return try { shareUri(ref) } catch(e: IllegalArgumentException) {
+            val entry=stat(ref)
+            val folder=File(context.cacheDir,"shared/${UUID.randomUUID()}").apply { mkdirs() }
+            try {
+                val copy=File(folder,Names.check(entry.name))
+                PreviewFiles.copy(input(ref),copy,entry.size) {}
+                FileProvider.getUriForFile(context,"${context.packageName}.files",copy)
+            } catch(e: Exception) { folder.deleteRecursively();throw e }
+        }
+    }
     fun scan(ref: String) {
         if(isFile(ref)) android.media.MediaScannerConnection.scanFile(context,arrayOf(file(ref).absolutePath),null,null)
     }

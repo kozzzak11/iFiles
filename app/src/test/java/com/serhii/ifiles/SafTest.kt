@@ -68,6 +68,24 @@ class SafTest {
         s.delete(renamed);assertTrue(s.list(dest).isEmpty())
         assertEquals("SAF works",s.input(from).bufferedReader().readText())
     }
+    @Test fun safPreviewIsByteExactAndDoesNotWriteOriginal() {
+        val tree=DC.buildTreeDocumentUri("ifiles.test.documents","root").toString()
+        val ref=s.create(tree,"Фото USB.pdf",false,"application/pdf")
+        val bytes="%PDF-1.7\npreview content".toByteArray();s.output(ref).use{it.write(bytes)}
+        val copy=File(base,"preview.tmp")
+        PreviewFiles.copy(s.input(ref),copy,s.stat(ref).size){}
+        assertArrayEquals(bytes,copy.readBytes());assertArrayEquals(bytes,s.input(ref).use{it.readBytes()})
+        assertEquals("pdf",PreviewFiles.kind(s.stat(ref),bytes))
+    }
+    @Test fun safAppleDoubleResolvesSiblingInNestedFolder() {
+        val tree=DC.buildTreeDocumentUri("ifiles.test.documents","root").toString()
+        val nested=s.create(tree,"Nested",true)
+        val original=s.create(nested,"Фото.jpg",false)
+        val sidecar=s.create(nested,"._Фото.jpg",false)
+        s.output(sidecar).use{it.write(byteArrayOf(0,5,22,7))}
+        val listed=s.list(nested)
+        assertEquals(original,PreviewFiles.resolve(s,listed.first{it.name.startsWith("._")}).ref)
+    }
     @Test fun rejectSafFolderIntoItself() {
         val tree=DC.buildTreeDocumentUri("ifiles.test.documents","root").toString()
         val nested=s.create(tree,"Nested",true)

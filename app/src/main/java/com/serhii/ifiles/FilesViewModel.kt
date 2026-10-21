@@ -14,7 +14,7 @@ import java.io.File
 
 data class ScreenState(
     val tab: String="Обзор", val stack: List<Entry> = emptyList(), val entries: List<Entry> = emptyList(),
-    val loading: Boolean=false, val error: String?=null, val warning: String?=null, val query: String="", val grid: Boolean=false,
+    val showHidden: Boolean=false, val loading: Boolean=false, val error: String?=null, val warning: String?=null, val query: String="", val grid: Boolean=false,
     val sort: String="Имя",val descending: Boolean=false,val selected: Set<String> = emptySet(),
     val selecting: Boolean=false, val favorites: Set<String> = emptySet(),val theme: String="Системная",
     val jobs: List<WorkInfo> = emptyList(), val notice: String? = null, val locationsVersion: Long = 0
@@ -22,7 +22,7 @@ data class ScreenState(
 
 class FilesViewModel(app: Application): AndroidViewModel(app) {
     val storage=Storage(app)
-    private val mutable=MutableStateFlow(ScreenState(grid=storage.prefs.getBoolean("grid",false),sort=storage.prefs.getString("sort","Имя")!!,theme=storage.prefs.getString("theme","Системная")!!))
+    private val mutable=MutableStateFlow(ScreenState(showHidden=storage.prefs.getBoolean("showHidden",false),grid=storage.prefs.getBoolean("grid",false),sort=storage.prefs.getString("sort","Имя")!!,theme=storage.prefs.getString("theme","Системная")!!))
     val state=mutable.asStateFlow();private var loadJob: Job?=null
     private var previousJobs=emptyMap<java.util.UUID,WorkInfo.State>()
     private val storageManager=app.getSystemService(android.os.storage.StorageManager::class.java)
@@ -71,6 +71,7 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
         else {change { it.copy(stack=it.stack.dropLast(1),entries=emptyList(),selected=emptySet()) };remember();refresh()}
     }
     fun query(q: String) { change { it.copy(query=q) };refresh(true) }
+    fun hidden() { change { it.copy(showHidden=!it.showHidden) };storage.prefs.edit().putBoolean("showHidden",state.value.showHidden).apply();refresh() }
     fun grid() {change { it.copy(grid=!it.grid) };storage.prefs.edit().putBoolean("grid",state.value.grid).apply()}
     fun sort(value: String) {change { it.copy(sort=value) };storage.prefs.edit().putString("sort",value).apply();refresh()}
     fun theme(value: String) {change{it.copy(theme=value)};storage.prefs.edit().putString("theme",value).apply()}
@@ -90,15 +91,16 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
                         a.tab=="Избранное" -> storage.strings("favorites").mapNotNull { runCatching { storage.stat(it) }.getOrNull() }
                         else -> emptyList()
                     }
-                    val entries=if(a.query.isBlank())base else {
+                    val visible=base.filter { a.showHidden || !PreviewFiles.hidden(it.name) }
+                    val entries=if(a.query.isBlank())visible else {
                         val found=ArrayList<Entry>(); val queue=java.util.ArrayDeque<Entry>()
-                        queue.addAll(base);val visited=hashSetOf<String>()
+                        queue.addAll(visible);val visited=hashSetOf<String>()
                         while(queue.isNotEmpty()) {
                             ensureActive();val item=queue.removeFirst()
                             if(!visited.add(item.ref))continue
                             if(item.name.contains(a.query,true))found+=item
                             if(item.directory && a.current!=null) {
-                                try {queue.addAll(storage.list(item.ref))}catch(e: SecurityException){skipped++}catch(e: IllegalArgumentException){skipped++}catch(e: IllegalStateException){skipped++}
+                                try {queue.addAll(storage.list(item.ref).filter { a.showHidden || !PreviewFiles.hidden(it.name) })}catch(e: SecurityException){skipped++}catch(e: IllegalArgumentException){skipped++}catch(e: IllegalStateException){skipped++}
                             }
                             if(found.size>=10000)kotlin.error("Найдено более 10 000 элементов. Уточните поиск.")
                         }

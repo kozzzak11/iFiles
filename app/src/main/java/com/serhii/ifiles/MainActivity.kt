@@ -1,5 +1,7 @@
 package com.serhii.ifiles
 
+import kotlinx.coroutines.CancellationException
+
 import android.Manifest
 import android.content.ClipData
 import android.content.Intent
@@ -135,17 +137,17 @@ private val Blue=Color(0xFF007AFF)
     fun parent(e: Entry): String? = s.parentOf(e.ref)
     fun saveParent(e: Entry) {s.rememberParent(e.ref)}
     fun clipboard(refs: List<String>,move: Boolean) {clip=refs;cut=move;s.prefs.edit().putString("clipboard",JSONArray(refs).toString()).putBoolean("cut",move).apply();vm.change{it.copy(selected=emptySet(),selecting=false)};vm.notice("Откройте папку назначения и нажмите «Вставить»")}
-    fun external(e: Entry,share: Boolean) {
+    fun external(e: Entry,share: Boolean) {scope.launch {
         runCatching {
-            val u=s.shareUri(e.ref)
+            val u=withContext(Dispatchers.IO){s.externalUri(e.ref)}
             val intent=if(share)Intent(Intent.ACTION_SEND).setType(e.mime).putExtra(Intent.EXTRA_STREAM,u) else Intent(Intent.ACTION_VIEW).setDataAndType(u,e.mime)
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);intent.clipData=ClipData.newRawUri(e.name,u)
             context.startActivity(Intent.createChooser(intent,if(share)"Поделиться" else "Открыть с помощью"))
-        }.onFailure {vm.notice("Не удалось открыть файл: ${it.message}")}
-    }
+        }.onFailure {if(it is CancellationException)throw it;vm.notice("Не удалось открыть файл: ${it.message}")}
+    }}
     fun shareMany(refs: List<String>) {scope.launch {
         runCatching {
-            val uris=ArrayList(withContext(Dispatchers.IO){refs.map{s.shareUri(it)}})
+            val uris=ArrayList(withContext(Dispatchers.IO){refs.map{s.externalUri(it)}})
             val intent=Intent(Intent.ACTION_SEND_MULTIPLE).setType("*/*").putParcelableArrayListExtra(Intent.EXTRA_STREAM,uris).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             intent.clipData=ClipData.newRawUri("Файлы",uris.first()).apply {uris.drop(1).forEach{addItem(ClipData.Item(it))}}
             context.startActivity(Intent.createChooser(intent,"Поделиться"))
@@ -156,7 +158,7 @@ private val Blue=Color(0xFF007AFF)
     DisposableEffect(owner) {val observer=LifecycleEventObserver { _,event ->if(event==Lifecycle.Event.ON_RESUME)vm.refresh()};owner.lifecycle.addObserver(observer);onDispose{owner.lifecycle.removeObserver(observer)}}
     LaunchedEffect(a.loading,a.tab,a.locationsVersion) {
         if(!a.loading) {
-            runCatching { vm.roots() }.onSuccess { roots=it }.onFailure(vm::error)
+            try { roots=vm.roots() } catch(e: CancellationException) {throw e} catch(e: Exception) {vm.error(e)}
             trash=withContext(Dispatchers.IO) { FileEngine(s).trashRecords() }
         }
     }
@@ -195,6 +197,7 @@ private val Blue=Color(0xFF007AFF)
                             DropdownMenuItem(text={Text(if(a.descending)"По возрастанию" else "По убыванию")},onClick={toolbar=false;vm.change{it.copy(descending=!it.descending)};vm.refresh()})
                             HorizontalDivider()
                             listOf("Системная","Светлая","Тёмная").forEach{t->DropdownMenuItem(text={Text("${if(t==a.theme)"✓ " else ""}$t тема")},onClick={toolbar=false;vm.theme(t)})}
+                            DropdownMenuItem(text={Text(if(a.showHidden)"Скрыть служебные файлы" else "Показать служебные файлы")},onClick={toolbar=false;vm.hidden()})
                             DropdownMenuItem(text={Text("Добавить папку")},onClick={toolbar=false;treePicker.launch(null)})
                             if(!Environment.isExternalStorageManager())DropdownMenuItem(text={Text("Разрешить доступ к памяти")},onClick={toolbar=false;launchAllFiles()})
                             DropdownMenuItem(text={Text("История операций")},onClick={toolbar=false;showOperations=true})
@@ -261,7 +264,7 @@ private val Blue=Color(0xFF007AFF)
                 if(a.current!=null && !a.loading)Text("${a.entries.size} элементов",Modifier.fillMaxWidth().padding(8.dp),textAlign=TextAlign.Center,fontSize=11.sp,color=colors.onSurfaceVariant)
             }
         }
-        preview?.let{e->Preview(e,s,{preview=null},{external(e,false)},{external(e,true)})}
+        preview?.let{e->Preview(e,s,{preview=null},{external(it,false)},{external(it,true)})}
         contextEntry?.let { e ->ModalBottomSheet(onDismissRequest={contextEntry=null}) {
             Row(Modifier.padding(20.dp),verticalAlignment=Alignment.CenterVertically){FileGlyph(e,s,Modifier.size(40.dp));Text(e.name,Modifier.padding(start=12.dp),fontWeight=FontWeight.SemiBold,maxLines=2)}
             val actions=mutableListOf<Pair<String,()->Unit>>()

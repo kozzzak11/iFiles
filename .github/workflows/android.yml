@@ -34,6 +34,20 @@ jobs:
             printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > ~/.android/debug.keystore
           fi
       - run: gradle :app:testDebugUnitTest :app:lintDebug :app:assembleRelease --stacktrace
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Native PDF and image preview on Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: default
+          profile: pixel_6
+          disable-animations: true
+          script: gradle :app:connectedDebugAndroidTest --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: iFiles-install-apk
