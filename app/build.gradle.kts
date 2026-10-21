@@ -18,6 +18,8 @@ android {
     testOptions { unitTests.isIncludeAndroidResources = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
+    // Match the explicit Actions cache path, independent of Android SDK/XDG defaults.
+    signingConfigs.getByName("debug").storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
     // Present only in the private source backup, never committed to GitHub.
     if (rootProject.file("signing/debug.keystore").exists()) {
         signingConfigs.getByName("debug") {
