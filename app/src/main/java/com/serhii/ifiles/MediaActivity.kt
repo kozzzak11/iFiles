@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -32,6 +33,10 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.media3.session.SessionError
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.*
 
@@ -46,6 +51,9 @@ class MediaActivity:ComponentActivity() {
     private var controller by mutableStateOf<MediaController?>(null)
     private var future:ListenableFuture<MediaController>?=null
     private var pip by mutableStateOf(false)
+    private var fullscreen by mutableStateOf(false)
+    private var resizeMode by mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT)
+    private var playbackSpeed by mutableFloatStateOf(1f)
     private var video by mutableStateOf(false)
     private var title by mutableStateOf("Медиаплеер")
     private var error by mutableStateOf<String?>(null)
@@ -70,15 +78,27 @@ class MediaActivity:ComponentActivity() {
             val dark=when(Storage(this).prefs.getString("theme","Системная")){"Тёмная"->true;"Светлая"->false;else->isSystemInDarkTheme()}
             MaterialTheme(colorScheme=if(dark)darkColorScheme() else lightColorScheme(primary=Color(0xFF007AFF))) {
                 Surface(Modifier.fillMaxSize()) {
+                    BackHandler(fullscreen && !pip) { fullscreen=false }
+                    SideEffect {
+                        val bars=WindowCompat.getInsetsController(window,window.decorView)
+                        if(fullscreen && !pip) {
+                            bars.systemBarsBehavior=WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                            bars.hide(WindowInsetsCompat.Type.systemBars())
+                        } else bars.show(WindowInsetsCompat.Type.systemBars())
+                    }
                     key(queueVersion) {
                         val pager=rememberPagerState(initialPage=initialPage.coerceIn(0,maxOf(0,queue.size-1)),pageCount={maxOf(1,queue.size)})
                         val scope=rememberCoroutineScope()
                         LaunchedEffect(pager.settledPage,queue) {if(queue.isNotEmpty()){pageIndex=pager.settledPage;select(queue[pageIndex])}}
-                        Column(if(pip)Modifier.fillMaxSize() else Modifier.fillMaxSize().safeDrawingPadding()) {
-                            if(!pip)Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                        Column(if(pip || fullscreen)Modifier.fillMaxSize() else Modifier.fillMaxSize().safeDrawingPadding()) {
+                            if(!pip && !fullscreen)Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
                                 TextButton(onClick={finish()}){Text("Готово")}
                                 Text(current?.name ?: title,Modifier.weight(1f),maxLines=1)
                                 if(video && currentKind=="media")IconButton(onClick={enterPip()}){Icon(Icons.Outlined.PictureInPictureAlt,"Картинка в картинке")}
+                                if(video && currentKind=="media") {
+                                    VideoSettingsMenu(resizeMode,playbackSpeed,{resizeMode=it},{playbackSpeed=it;controller?.setPlaybackParameters(PlaybackParameters(it,1f))})
+                                    IconButton(onClick={fullscreen=true}){Icon(Icons.Outlined.Fullscreen,"На весь экран")}
+                                }
                                 IconButton(onClick={share()}){Icon(Icons.Outlined.IosShare,"Поделиться")}
                                 Box {
                                     var menu by remember{mutableStateOf(false)}
@@ -93,7 +113,11 @@ class MediaActivity:ComponentActivity() {
                                     if(index==pager.settledPage) {
                                         if(currentKind=="media" || queue.isEmpty()) {
                                             val player=controller
-                                            if(player!=null)AndroidView(factory={PlayerView(it).apply{this.player=player}},update={it.player=player;it.useController=!pip},onRelease={it.player=null},modifier=Modifier.fillMaxSize())
+                                            if(player!=null)AndroidView(factory={PlayerView(it).apply{this.player=player;resizeMode=this@MediaActivity.resizeMode}},update={it.player=player;it.useController=!pip;it.resizeMode=resizeMode},onRelease={it.player=null},modifier=Modifier.fillMaxSize())
+                                            if(fullscreen && video && !pip)Row(Modifier.align(Alignment.TopEnd).padding(8.dp),verticalAlignment=Alignment.CenterVertically) {
+                                                VideoSettingsMenu(resizeMode,playbackSpeed,{resizeMode=it},{playbackSpeed=it;controller?.setPlaybackParameters(PlaybackParameters(it,1f))})
+                                                IconButton(onClick={fullscreen=false}){Icon(Icons.Outlined.FullscreenExit,"Выйти из полноэкранного режима",tint=Color.White)}
+                                            }
                                             if(error!=null && !pip)Surface{Text(error!!,Modifier.padding(24.dp))} else if(loading)CircularProgressIndicator()
                                         } else if(error!=null)Text(error!!,Modifier.padding(24.dp))
                                         else if(current==null || currentKind.isEmpty())CircularProgressIndicator()
@@ -101,7 +125,7 @@ class MediaActivity:ComponentActivity() {
                                     }
                                 }
                             }
-                            if(!pip) {
+                            if(!pip && !fullscreen) {
                                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
                                     IconButton(modifier=Modifier.semantics{contentDescription="Предыдущий файл"},enabled=pager.currentPage>0,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage-1)}}){Icon(Icons.Outlined.ChevronLeft,null)}
                                     Text("${if(queue.isEmpty())1 else pager.currentPage+1} / ${queue.size.coerceAtLeast(1)}")
@@ -186,9 +210,34 @@ class MediaActivity:ComponentActivity() {
         }catch(e:CancellationException){throw e}catch(e:Exception){error=e.message}
     }}
     override fun onDestroy() {
+        WindowCompat.getInsetsController(window,window.decorView).show(WindowInsetsCompat.Type.systemBars())
         controller?.removeListener(listener)
         future?.let {MediaController.releaseFuture(it)}
         controller=null
         super.onDestroy()
+    }
+}
+
+@Composable
+private fun VideoSettingsMenu(
+    resizeMode:Int,
+    speed:Float,
+    onResize:(Int)->Unit,
+    onSpeed:(Float)->Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick={expanded=true}) { Icon(Icons.Outlined.Tune,"Настройки видео",tint=if(resizeMode==AspectRatioFrameLayout.RESIZE_MODE_FIT) LocalContentColor.current else MaterialTheme.colorScheme.primary) }
+        DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}) {
+            Text("Размер кадра",Modifier.padding(horizontal=16.dp,vertical=8.dp),style=MaterialTheme.typography.labelMedium)
+            listOf("Вписать" to AspectRatioFrameLayout.RESIZE_MODE_FIT,"Заполнить" to AspectRatioFrameLayout.RESIZE_MODE_ZOOM,"Растянуть" to AspectRatioFrameLayout.RESIZE_MODE_FILL).forEach { (label,mode) ->
+                DropdownMenuItem(text={Text((if(resizeMode==mode)"✓ " else "")+label)},onClick={onResize(mode);expanded=false})
+            }
+            HorizontalDivider()
+            Text("Скорость",Modifier.padding(horizontal=16.dp,vertical=8.dp),style=MaterialTheme.typography.labelMedium)
+            listOf(.5f,.75f,1f,1.25f,1.5f,2f).forEach { value ->
+                DropdownMenuItem(text={Text((if(speed==value)"✓ " else "")+"${value}×")},onClick={onSpeed(value);expanded=false})
+            }
+        }
     }
 }
