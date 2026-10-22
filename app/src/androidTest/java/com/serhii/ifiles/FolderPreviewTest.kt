@@ -87,10 +87,11 @@ class FolderPreviewTest {
     }
     @Test fun multiPagePdfScrollsVerticallyAndStaysInSameFile() {
         val file=File(context.cacheDir,"Thirty pages.pdf")
-        android.graphics.pdf.PdfDocument().use { pdf->
+        val pdf=android.graphics.pdf.PdfDocument()
+        try {
             for(i in 1..30){val page=pdf.startPage(android.graphics.pdf.PdfDocument.PageInfo.Builder(595,842,i).create());page.canvas.drawText("Page $i",40f,80f,android.graphics.Paint().apply{textSize=30f});pdf.finishPage(page)}
             file.outputStream().use{pdf.writeTo(it)}
-        }
+        }finally{pdf.close()}
         val entry=Entry(file.toURI().toString(),file.name,false,file.length(),mime="application/pdf")
         val next=Entry("content://com.serhii.ifiles.test.preview/png","Next.png",false,mime="image/png")
         val queue=PreviewQueue.save(context,entry,listOf(entry,next))
