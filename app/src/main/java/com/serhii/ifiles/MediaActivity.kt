@@ -11,6 +11,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -46,6 +50,14 @@ class MediaActivity:ComponentActivity() {
     private var title by mutableStateOf("Медиаплеер")
     private var error by mutableStateOf<String?>(null)
     private var loading by mutableStateOf(true)
+    private var queue by mutableStateOf<List<Entry>>(emptyList())
+    private var current by mutableStateOf<Entry?>(null)
+    private var currentKind by mutableStateOf("")
+    private var queueName:String?=null
+    private var initialPage by mutableIntStateOf(0)
+    private var queueVersion by mutableIntStateOf(0)
+    private var pageIndex=0
+    private var resolveJob:Job?=null
     private var canPip=false
     private var pipParams=PictureInPictureParams.Builder().build()
     private val listener=object:Player.Listener {
@@ -58,21 +70,40 @@ class MediaActivity:ComponentActivity() {
             val dark=when(Storage(this).prefs.getString("theme","Системная")){"Тёмная"->true;"Светлая"->false;else->isSystemInDarkTheme()}
             MaterialTheme(colorScheme=if(dark)darkColorScheme() else lightColorScheme(primary=Color(0xFF007AFF))) {
                 Surface(Modifier.fillMaxSize()) {
-                    Column(if(pip)Modifier.fillMaxSize() else Modifier.fillMaxSize().safeDrawingPadding()) {
-                        if(!pip)Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
-                            TextButton(onClick={finish()}){Text("Готово")}
-                            Text(title,Modifier.weight(1f),maxLines=1)
-                            if(video)IconButton(onClick={enterPip()}){Icon(Icons.Outlined.PictureInPictureAlt,"Картинка в картинке")}
-                            IconButton(onClick={share()}){Icon(Icons.Outlined.IosShare,"Поделиться")}
-                            IconButton(onClick={controller?.stop();controller?.clearMediaItems();finish()}){Icon(Icons.Outlined.StopCircle,"Остановить воспроизведение")}
+                    key(queueVersion) {
+                        val pager=rememberPagerState(initialPage=initialPage.coerceIn(0,maxOf(0,queue.size-1)),pageCount={maxOf(1,queue.size)})
+                        val scope=rememberCoroutineScope()
+                        LaunchedEffect(pager.settledPage,queue) {if(queue.isNotEmpty()){pageIndex=pager.settledPage;select(queue[pageIndex])}}
+                        Column(if(pip)Modifier.fillMaxSize() else Modifier.fillMaxSize().safeDrawingPadding()) {
+                            if(!pip)Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                                TextButton(onClick={finish()}){Text("Готово")}
+                                Text(current?.name ?: title,Modifier.weight(1f),maxLines=1)
+                                if(video && currentKind=="media")IconButton(onClick={enterPip()}){Icon(Icons.Outlined.PictureInPictureAlt,"Картинка в картинке")}
+                                IconButton(onClick={share()}){Icon(Icons.Outlined.IosShare,"Поделиться")}
+                                IconButton(onClick={share(true)}){Icon(Icons.Outlined.OpenInNew,"Открыть в приложении")}
+                            }
+                            HorizontalPager(state=pager,userScrollEnabled=!pip,modifier=Modifier.weight(1f).fillMaxWidth(),key={queue.getOrNull(it)?.ref ?: "media"}) {index->
+                                Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
+                                    if(index==pager.settledPage) {
+                                        if(currentKind=="media" || queue.isEmpty()) {
+                                            val player=controller
+                                            if(player!=null)AndroidView(factory={PlayerView(it).apply{this.player=player}},update={it.player=player;it.useController=!pip},onRelease={it.player=null},modifier=Modifier.fillMaxSize())
+                                            if(error!=null && !pip)Surface{Text(error!!,Modifier.padding(24.dp))} else if(loading)CircularProgressIndicator()
+                                        } else if(error!=null)Text(error!!,Modifier.padding(24.dp))
+                                        else if(current==null || currentKind.isEmpty())CircularProgressIndicator()
+                                        else key(current!!.ref){FilePreviewContent(current!!,Storage(this@MediaActivity),currentKind)}
+                                    }
+                                }
+                            }
+                            if(!pip) {
+                                if(queue.size>1)Row(Modifier.fillMaxWidth().pointerInput(queue.size){var drag=0f;detectHorizontalDragGestures(onDragStart={drag=0f},onDragEnd={if(kotlin.math.abs(drag)>40){val target=(pager.currentPage+if(drag<0)1 else -1).coerceIn(0,queue.lastIndex);scope.launch{pager.animateScrollToPage(target)}}}){change,amount->change.consume();drag+=amount}},verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
+                                    IconButton(enabled=pager.currentPage>0,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage-1)}}){Icon(Icons.Outlined.ChevronLeft,"Предыдущий файл")}
+                                    Text("${pager.currentPage+1} / ${queue.size}")
+                                    IconButton(enabled=pager.currentPage<queue.lastIndex,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage+1)}}){Icon(Icons.Outlined.ChevronRight,"Следующий файл")}
+                                }
+                                if(currentKind=="media")TextButton(onClick={controller?.stop();controller?.clearMediaItems();loading=false}){Text("Остановить воспроизведение")}
+                            }
                         }
-                        Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {
-                            val player=controller
-                            if(player!=null)AndroidView(factory={PlayerView(it).apply{this.player=player}},update={it.player=player;it.useController=!pip},modifier=Modifier.fillMaxSize())
-                            if(error!=null && !pip)Surface {Text(error!!,Modifier.padding(24.dp))}
-                            else if(loading)CircularProgressIndicator()
-                        }
-                        if(!pip && !video)Text("Воспроизведение продолжается при сворачивании и блокировке экрана",Modifier.padding(16.dp))
                     }
                 }
             }
@@ -82,26 +113,50 @@ class MediaActivity:ComponentActivity() {
             override fun onDisconnected(controller:MediaController){if(!isFinishing){error="Воспроизведение завершено";loading=false}}
         }).buildAsync()
         future=f
-        f.addListener({try {controller=f.get();controller!!.addListener(listener);open(intent);sync()}catch(e:Exception){error=e.cause?.message ?: e.message ?: "Плеер недоступен"}},ContextCompat.getMainExecutor(this))
+        f.addListener({try {controller=f.get();controller!!.addListener(listener);loadQueue(intent,savedInstanceState);sync()}catch(e:Exception){error=e.cause?.message ?: e.message ?: "Плеер недоступен"}},ContextCompat.getMainExecutor(this))
     }
-    override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);if(controller!=null)open(intent)}
-    private fun open(intent:Intent) {
-        val ref=intent.getStringExtra("ref") ?: return
-        // Consume the request: rotations and notification taps resume the current position.
-        intent.removeExtra("ref")
+    override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);if(controller!=null)loadQueue(intent,null)}
+    private fun loadQueue(request:Intent,saved:Bundle?) {
+        val name=saved?.getString("queue") ?: request.getStringExtra("queue")
+        val ref=request.getStringExtra("ref")
+        if(name==null && ref==null) { // Notification: keep the service's current playback.
+            val item=controller?.currentMediaItem
+            if(item!=null){current=Entry(item.mediaId,item.mediaMetadata.title?.toString() ?: "Медиафайл",false,mime=item.mediaMetadata.extras?.getString("mime") ?: "application/octet-stream");currentKind="media"}
+            return
+        }
+        lifecycleScope.launch {
+            try {
+                val fallback=ref?.let{Entry(it,request.getStringExtra("name") ?: "Файл",false,request.getLongExtra("size",-1),mime=request.getStringExtra("mime") ?: "application/octet-stream")}
+                val items=withContext(Dispatchers.IO){if(name!=null)PreviewQueue.load(this@MediaActivity,name) else listOfNotNull(fallback)}
+                queueName=name;initialPage=(saved?.getInt("page") ?: items.indexOfFirst{it.ref==ref}.coerceAtLeast(0)).coerceIn(0,maxOf(0,items.lastIndex));queue=items;queueVersion++
+            }catch(ex:CancellationException){throw ex}catch(ex:Exception){error=ex.message;loading=false}
+        }
+    }
+    private fun select(entry:Entry) {
+        resolveJob?.cancel()
+        if(current?.ref!=entry.ref){if(controller?.currentMediaItem?.mediaId!=entry.ref)controller?.pause();current=entry;currentKind="";video=false;error=null;loading=true;sync()}
+        resolveJob=lifecycleScope.launch {
+            try {
+                val s=Storage(this@MediaActivity)
+                val result=withContext(Dispatchers.IO){val actual=PreviewFiles.resolve(s,entry);actual to s.input(actual.ref).use{PreviewFiles.kind(actual,PreviewFiles.read(it,512))}}
+                current=result.first;currentKind=result.second;s.recent(result.first.ref)
+                if(currentKind=="media")play(result.first) else {controller?.pause();loading=false;sync()}
+            }catch(ex:CancellationException){throw ex}catch(ex:Exception){error=ex.message ?: "Файл недоступен. Проверьте USB.";loading=false}
+        }
+    }
+    private fun play(e:Entry) {
         val player=controller ?: return
-        if(player.currentMediaItem?.mediaId==ref && player.playbackState!=Player.STATE_IDLE)return
+        if(player.currentMediaItem?.mediaId==e.ref && player.playbackState!=Player.STATE_IDLE){player.play();sync();return}
         error=null;loading=true
-        val metadata=MediaMetadata.Builder().setTitle(intent.getStringExtra("name") ?: "Медиафайл").setExtras(Bundle().apply {
-            putLong("size",intent.getLongExtra("size",-1));putString("mime",intent.getStringExtra("mime"));putBoolean("video",intent.getBooleanExtra("video",false))
-        }).build()
-        player.setMediaItem(MediaItem.Builder().setMediaId(ref).setUri(ref).setMediaMetadata(metadata).build())
+        val metadata=MediaMetadata.Builder().setTitle(e.name).setExtras(Bundle().apply{putLong("size",e.size);putString("mime",e.mime);putBoolean("video",PlaybackRules.video(e))}).build()
+        player.setMediaItem(MediaItem.Builder().setMediaId(e.ref).setUri(e.ref).setMediaMetadata(metadata).build())
         player.prepare();player.play()
     }
+    override fun onSaveInstanceState(outState:Bundle){super.onSaveInstanceState(outState);outState.putString("queue",queueName);outState.putInt("page",pageIndex)}
     private fun sync() {
         val player=controller ?: return
         title=player.mediaMetadata.title?.toString() ?: "Медиаплеер"
-        video=player.mediaMetadata.extras?.getBoolean("video",false)==true
+        video=currentKind=="media" && player.mediaMetadata.extras?.getBoolean("video",false)==true
         loading=player.playbackState==Player.STATE_IDLE || player.playbackState==Player.STATE_BUFFERING
         canPip=PlaybackRules.pip(video,player.playWhenReady,player.playbackState)
         val aspect=PlaybackRules.ratio(player.videoSize.width,player.videoSize.height)
@@ -116,10 +171,12 @@ class MediaActivity:ComponentActivity() {
     }
     override fun onUserLeaveHint(){super.onUserLeaveHint();if(Build.VERSION.SDK_INT<31 && canPip)enterPip()}
     override fun onPictureInPictureModeChanged(inPip:Boolean,newConfig:Configuration){super.onPictureInPictureModeChanged(inPip,newConfig);pip=inPip}
-    private fun share() {val item=controller?.currentMediaItem ?: return;lifecycleScope.launch {
+    private fun share(external:Boolean=false) {val entry=current ?: return;lifecycleScope.launch {
         try {
-            val s=Storage(this@MediaActivity);val uri=withContext(Dispatchers.IO){s.externalUri(item.mediaId){ensureActive()}}
-            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType(item.mediaMetadata.extras?.getString("mime") ?: "*/*").putExtra(Intent.EXTRA_STREAM,uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION).apply{clipData=android.content.ClipData.newRawUri(title,uri)},"Поделиться"))
+            val s=Storage(this@MediaActivity);val uri=withContext(Dispatchers.IO){s.externalUri(entry.ref){ensureActive()}}
+            val action=if(external)Intent(Intent.ACTION_VIEW).setDataAndType(uri,entry.mime) else Intent(Intent.ACTION_SEND).setType(entry.mime).putExtra(Intent.EXTRA_STREAM,uri)
+            action.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);action.clipData=android.content.ClipData.newRawUri(entry.name,uri)
+            startActivity(Intent.createChooser(action,if(external)"Открыть в приложении" else "Поделиться"))
         }catch(e:CancellationException){throw e}catch(e:Exception){error=e.message}
     }}
     override fun onDestroy() {

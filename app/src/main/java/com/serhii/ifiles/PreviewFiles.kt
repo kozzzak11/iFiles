@@ -23,10 +23,12 @@ object PreviewFiles {
         val ext=e.name.substringAfterLast('.',"").lowercase()
         if(head.size>=5 && head.copyOfRange(0,5).contentEquals("%PDF-".toByteArray()))return "pdf"
         if(ext=="pdf" || e.mime=="application/pdf")return "pdf"
-        if(ext in setOf("docx","xlsx","pptx","odt","ods","odp","epub"))return "document"
+        if(ext in setOf("xls","xlsx","xlsm") || e.mime in setOf("application/vnd.ms-excel","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))return "spreadsheet"
+        if(ext in setOf("doc","docx","docm") || e.mime=="application/msword")return "word"
+        if(ext in setOf("pptx","odt","ods","odp","epub"))return "document"
         if(ext=="zip" || e.mime=="application/zip")return "archive"
         if(e.mime.startsWith("image/") || ext in setOf("jpg","jpeg","png","gif","webp","bmp","heic","heif","avif"))return "image"
-        if(e.mime.startsWith("audio/") || e.mime.startsWith("video/") || ext in setOf("mp3","m4a","aac","wav","flac","ogg","mp4","mov","mkv","webm","3gp"))return "media"
+        if(e.mime.startsWith("audio/") || e.mime.startsWith("video/") || ext in setOf("mp3","m4a","aac","wav","flac","ogg","opus","amr","ac3","eac3","mp4","m4v","mov","mkv","webm","3gp","avi","ts","mts","m2ts","mpeg","mpg","flv"))return "media"
         if(ext in setOf("txt","md","csv","log","json","xml","kt","java","py","js","ts","html","htm","css","yaml","yml","ini","conf","rtz","usr","srt","vtt") || isText(head))return "text"
         return "binary"
     }

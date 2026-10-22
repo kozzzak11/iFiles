@@ -10,7 +10,11 @@ import android.util.LruCache
 import android.util.Size
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -91,56 +95,87 @@ object Thumbnails {
         else -> Icons.Outlined.Description
     },null,modifier,tint=if(e.directory)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary)
 }
-@Composable fun Preview(e: Entry,s: Storage,onClose:()->Unit,onExternal:(Entry)->Unit,onShare:(Entry)->Unit) {
-    var resolved by remember(e.ref){mutableStateOf<Entry?>(null)}
-    var kind by remember(e.ref){mutableStateOf("")}
-    var issue by remember(e.ref){mutableStateOf<String?>(null)}
+@Composable fun Preview(e: Entry,s: Storage,onClose:()->Unit,onExternal:(Entry)->Unit,onShare:(Entry)->Unit,entries:List<Entry> = emptyList()) {
+    var error by remember(e.ref){mutableStateOf<String?>(null)}
     LaunchedEffect(e.ref) {
         try {
-            val result=withContext(Dispatchers.IO) {
-                val actual=PreviewFiles.resolve(s,e)
-                actual to PreviewFiles.kind(actual,s.input(actual.ref).use { PreviewFiles.read(it,512) })
-            }
-            resolved=result.first;kind=result.second;s.recent(result.first.ref)
-        } catch(ex: CancellationException) {throw ex} catch(ex: Exception) {issue=ex.message ?: "Файл недоступен. Проверьте подключение USB."}
+            val file=withContext(Dispatchers.IO){PreviewQueue.save(s.context,e,entries)}
+            s.context.startActivity(MediaActivity.intent(s.context,e).putExtra("queue",file.name).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+            onClose()
+        }catch(ex:CancellationException){throw ex}catch(ex:Exception){error=ex.message ?: "Не удалось открыть просмотр"}
     }
-    Dialog(onDismissRequest=onClose,properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
-        Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-                Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
-                    TextButton(onClick=onClose){Text("Готово")}
-                    Text(resolved?.name ?: e.name,Modifier.weight(1f),maxLines=1)
-                    IconButton(onClick={onShare(resolved ?: e)}){Icon(Icons.Outlined.IosShare,"Поделиться")}
-                    IconButton(onClick={onExternal(resolved ?: e)}){Icon(Icons.Outlined.OpenInNew,"Открыть в приложении")}
-                }
-                Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {
-                    val actual=resolved
-                    when {
-                        issue!=null -> Text(issue!!,Modifier.padding(24.dp))
-                        actual==null -> CircularProgressIndicator()
-                        kind=="appledouble" -> Text("Служебный файл macOS. Он не содержит сам документ.",Modifier.padding(24.dp))
-                        kind=="image" -> ImagePreview(actual.copy(mime="image/preview"),s)
-                        kind=="media" -> {
-                            LaunchedEffect(actual.ref) {s.context.startActivity(MediaActivity.intent(s.context,actual).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));onClose()}
-                            CircularProgressIndicator()
-                        }
-                        kind=="pdf" -> PdfPreview(actual,s)
-                        kind=="text" -> TextPreview(actual,s)
-                        else -> DocumentPreview(actual,s,kind)
-                    }
-                }
-            }
+    if(error!=null)AlertDialog(onDismissRequest=onClose,confirmButton={TextButton(onClick=onClose){Text("Закрыть")}},text={Text(error!!)})
+}
+@Composable fun FilePreviewContent(e:Entry,s:Storage,kind:String) {
+    when(kind) {
+        "image" -> ImagePreview(e.copy(mime="image/preview"),s)
+        "pdf" -> PdfPreview(e,s)
+        "spreadsheet" -> SpreadsheetPreview(e,s)
+        "word" -> WordPreview(e,s)
+        "text" -> TextPreview(e,s)
+        "document","archive" -> DocumentPreview(e,s,PreviewFiles.kind(e,byteArrayOf()))
+        else -> Text("Для этого формата нет встроенного просмотра. Нажмите «Открыть в приложении» вверху.",Modifier.padding(24.dp))
+    }
+}
+@Composable private fun WordPreview(e:Entry,s:Storage) {
+    var html by remember(e.ref){mutableStateOf<String?>(null)}
+    var error by remember(e.ref){mutableStateOf<String?>(null)}
+    LaunchedEffect(e.ref){try {html=withContext(Dispatchers.IO){val f=File.createTempFile("word-",".tmp",s.context.cacheDir);try{PreviewFiles.copy(s.input(e.ref),f,e.size){ensureActive()};WordDocuments.html(f,e.name.endsWith(".doc",true)){ensureActive()}}finally{f.delete()}}}catch(ex:CancellationException){throw ex}catch(ex:Exception){error=ex.message ?: "Не удалось открыть Word"}}
+    if(error!=null)Text(error!!,Modifier.padding(24.dp)) else if(html==null)CircularProgressIndicator() else AndroidView(factory={ctx->android.webkit.WebView(ctx).apply{
+        settings.javaScriptEnabled=false;settings.allowFileAccess=false;settings.allowContentAccess=false;settings.blockNetworkLoads=true
+        settings.setSupportZoom(true);settings.builtInZoomControls=true;settings.displayZoomControls=false
+        webViewClient=object:android.webkit.WebViewClient(){override fun shouldOverrideUrlLoading(view:android.webkit.WebView,request:android.webkit.WebResourceRequest)=true}
+        loadDataWithBaseURL(null,html!!,"text/html","UTF-8",null)
+    }},onRelease={it.destroy()},modifier=Modifier.fillMaxSize())
+}
+@Composable private fun SpreadsheetPreview(e:Entry,s:Storage) {
+    var sheets by remember(e.ref){mutableStateOf<List<SheetPage>?>(null)}
+    var selected by androidx.compose.runtime.saveable.rememberSaveable(e.ref){mutableIntStateOf(0)}
+    var error by remember(e.ref){mutableStateOf<String?>(null)}
+    val dark=androidx.compose.foundation.isSystemInDarkTheme()
+    var html by remember(e.ref){mutableStateOf<String?>(null)}
+    LaunchedEffect(e.ref){
+        try {sheets=withContext(Dispatchers.IO){
+            val f=File.createTempFile("workbook-",".tmp",s.context.cacheDir)
+            try {PreviewFiles.copy(s.input(e.ref),f,e.size){ensureActive()};Workbooks.read(f,e.name.substringAfterLast('.')){ensureActive()}}finally{f.delete()}
+        }}catch(ex:CancellationException){throw ex}catch(ex:Exception){error=ex.message ?: "Не удалось открыть таблицу"}
+    }
+    LaunchedEffect(sheets,selected,dark){html=null;val sheet=sheets?.getOrNull(selected) ?: return@LaunchedEffect;html=withContext(Dispatchers.Default){Workbooks.html(sheet,dark)}}
+    if(error!=null)Text(error!!,Modifier.padding(24.dp)) else if(sheets==null)CircularProgressIndicator() else Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {sheets!!.forEachIndexed{i,sheet->FilterChip(selected=i==selected,onClick={selected=i},label={Text(sheet.name)},modifier=Modifier.padding(4.dp))}}
+        Text("Только просмотр · формулы: сохранённые результаты",Modifier.padding(horizontal=12.dp),style=MaterialTheme.typography.labelSmall)
+        val page=html
+        if(page==null)CircularProgressIndicator() else key(e.ref,selected,dark) {
+            AndroidView(factory={ctx->android.webkit.WebView(ctx).apply {
+                settings.javaScriptEnabled=false;settings.allowFileAccess=false;settings.allowContentAccess=false
+                settings.blockNetworkLoads=true;settings.setSupportZoom(true);settings.builtInZoomControls=true;settings.displayZoomControls=false
+                webViewClient=object:android.webkit.WebViewClient(){override fun shouldOverrideUrlLoading(view:android.webkit.WebView,request:android.webkit.WebResourceRequest)=true}
+                loadDataWithBaseURL(null,page,"text/html","UTF-8",null)
+            }},onRelease={it.destroy()},modifier=Modifier.fillMaxSize())
         }
     }
 }
 @Composable private fun ZoomImage(bitmap: Bitmap) {
     var scale by remember(bitmap){mutableFloatStateOf(1f)}; var x by remember(bitmap){mutableFloatStateOf(0f)};var y by remember(bitmap){mutableFloatStateOf(0f)}
-    Box(Modifier.fillMaxSize().pointerInput(bitmap){detectTransformGestures { _,pan,zoom,_->scale=(scale*zoom).coerceIn(1f,5f);x=if(scale==1f)0f else (x+pan.x).coerceIn(-size.width*scale,size.width*scale);y=if(scale==1f)0f else(y+pan.y).coerceIn(-size.height*scale,size.height*scale) }},contentAlignment=Alignment.Center) {
+    Box(Modifier.fillMaxSize().pointerInput(bitmap){awaitEachGesture {
+        awaitFirstDown(requireUnconsumed=false)
+        do {
+            val event=awaitPointerEvent()
+            val multi=event.changes.count{it.pressed}>1
+            if(multi || scale>1f) {
+                val zoom=event.calculateZoom();val pan=event.calculatePan()
+                scale=(scale*zoom).coerceIn(1f,5f)
+                x=if(scale==1f)0f else (x+pan.x).coerceIn(-size.width*scale,size.width*scale)
+                y=if(scale==1f)0f else (y+pan.y).coerceIn(-size.height*scale,size.height*scale)
+                event.changes.forEach{it.consume()}
+            }
+        }while(event.changes.any{it.pressed})
+    }},contentAlignment=Alignment.Center) {
         Image(bitmap.asImageBitmap(),"Просмотр",Modifier.fillMaxSize().graphicsLayer(scaleX=scale,scaleY=scale,translationX=x,translationY=y))
     }
 }
 @Composable private fun ImagePreview(e: Entry,s: Storage) {
-    var b by remember(e.ref){mutableStateOf<Bitmap?>(null)};var error by remember{mutableStateOf<String?>(null)}
+    var b by remember(e.ref){mutableStateOf<Bitmap?>(null)};var error by remember(e.ref){mutableStateOf<String?>(null)}
     LaunchedEffect(e.ref){ b=withContext(Dispatchers.IO){Thumbnails.load(s,e,2048)};if(b==null)error="Не удалось декодировать изображение" }
     if(b!=null)ZoomImage(b!!) else if(error!=null)Text(error!!) else CircularProgressIndicator()
 }

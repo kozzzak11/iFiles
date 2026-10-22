@@ -48,7 +48,7 @@ class PreviewFilesTest {
     @Test fun signatureAndExtensionOverrideWrongProviderMime() {
         assertEquals("pdf",PreviewFiles.kind(Entry("content://x/1","x",false,mime="text/plain"),"%PDF-1.4".toByteArray()))
         assertEquals("image",PreviewFiles.kind(Entry("content://x/2","Фото.HEIC",false,mime="application/octet-stream"),byteArrayOf()))
-        assertEquals("document",PreviewFiles.kind(Entry("x","Plan.DOCX",false),byteArrayOf()))
+        assertEquals("word",PreviewFiles.kind(Entry("x","Plan.DOCX",false),byteArrayOf()))
         assertEquals("appledouble",PreviewFiles.kind(Entry("x","x.pdf",false),byteArrayOf(0,5,22,7)))
     }
     @Test fun textSupportsUtf16AndUtf8Bom() {
