@@ -110,7 +110,10 @@ private val Blue=Color(0xFF007AFF)
     var trash by remember{mutableStateOf<List<JSONObject>>(emptyList())}
     var destinationAction by remember{mutableStateOf<Pair<String,List<String>>?>(null)}
     val treePicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()){u ->
-        if(u!=null)runCatching{s.addTree(u);vm.refresh()}.onFailure(vm::error)
+        if(u!=null)scope.launch {
+            try { val entry=withContext(Dispatchers.IO){s.addTree(u);s.stat(u.toString())};vm.open(entry) }
+            catch(ex:CancellationException){throw ex}catch(ex:Exception){vm.error(ex)}
+        }
     }
     val volumePicker=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val uri=result.data?.data

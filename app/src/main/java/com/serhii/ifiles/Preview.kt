@@ -101,7 +101,7 @@ object Thumbnails {
         try {
             val file=withContext(Dispatchers.IO){
                 val parent=s.parentOf(e.ref)
-                val siblings=if(entries.isNotEmpty())entries.filter{parent==null || s.parentOf(it.ref)==parent} else parent?.let{runCatching{s.list(it).filter{x->!PreviewFiles.hidden(x.name)}.sortedBy{x->x.name.lowercase()}}.getOrNull()} ?: emptyList()
+                val siblings=if(entries.isNotEmpty())entries else parent?.let{runCatching{s.list(it).filter{x->!PreviewFiles.hidden(x.name)}.sortedBy{x->x.name.lowercase()}}.getOrNull()} ?: emptyList()
                 PreviewQueue.save(s.context,e,siblings)
             }
             s.context.startActivity(MediaActivity.intent(s.context,e).putExtra("queue",file.name).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -118,7 +118,7 @@ object Thumbnails {
         "word" -> WordPreview(e,s)
         "text" -> TextPreview(e,s)
         "document","archive" -> DocumentPreview(e,s,PreviewFiles.kind(e,byteArrayOf()))
-        else -> Text("Для этого формата нет встроенного просмотра. Нажмите «Открыть в приложении» вверху.",Modifier.padding(24.dp))
+        else -> Text("Для этого формата нет встроенного просмотра. Выберите «Открыть в другом приложении» в меню ⋮.",Modifier.padding(24.dp))
     }
 }
 @Composable private fun WordPreview(e:Entry,s:Storage) {

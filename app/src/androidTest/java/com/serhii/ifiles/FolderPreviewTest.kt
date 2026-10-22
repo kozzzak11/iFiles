@@ -113,6 +113,43 @@ class FolderPreviewTest {
             assertTrue(device.wait(Until.hasObject(By.text("Next.png")),10000))
         }
     }
+    @Test fun singleFileKeepsArrowsAndExternalOpenLivesInMenu() {
+        val file=File(context.cacheDir,"Single.txt").apply{writeText("Single document body")}
+        val entry=Entry(file.toURI().toString(),file.name,false,file.length(),mime="text/plain")
+        ActivityScenario.launch<MediaActivity>(MediaActivity.intent(context,entry)).use {
+            assertTrue(device.wait(Until.hasObject(By.text("Single document body")),15000))
+            assertTrue(device.hasObject(By.text("1 / 1")))
+            assertFalse(device.findObject(By.desc("Предыдущий файл")).isEnabled)
+            assertFalse(device.findObject(By.desc("Следующий файл")).isEnabled)
+            assertFalse(device.hasObject(By.text("Открыть в другом приложении")))
+            device.findObject(By.desc("Ещё")).click()
+            assertTrue(device.wait(Until.hasObject(By.text("Открыть в другом приложении")),5000))
+            device.pressBack()
+        }
+    }
+    @Test fun tappingFileInBrowserOpensInternallyWithFolderArrows() {
+        val storage=Storage(context)
+        val oldStack=storage.prefs.getString("stack","[]")
+        val oldTab=storage.prefs.getString("tab","Обзор")
+        val directory=File(context.cacheDir,"browse-test").apply{mkdirs()}
+        File(directory,"A.txt").writeText("First browser document")
+        File(directory,"B.txt").writeText("Second browser document")
+        storage.prefs.edit().putString("stack",org.json.JSONArray(listOf(directory.toURI().toString())).toString()).putString("tab","Обзор").commit()
+        device.executeShellCommand("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
+        try {
+            ActivityScenario.launch<MainActivity>(android.content.Intent(context,MainActivity::class.java)).use {
+                assertTrue(device.wait(Until.hasObject(By.text("A.txt")),15000))
+                device.findObject(By.text("A.txt")).click()
+                assertTrue(device.wait(Until.hasObject(By.text("First browser document")),15000))
+                assertTrue(device.hasObject(By.text("1 / 2")))
+                assertEquals(context.packageName,device.currentPackageName)
+                device.findObject(By.desc("Следующий файл")).click()
+                assertTrue(device.wait(Until.hasObject(By.text("Second browser document")),15000))
+                assertTrue(device.hasObject(By.text("2 / 2")))
+                device.findObject(By.text("Готово")).click()
+            }
+        }finally{storage.prefs.edit().putString("stack",oldStack).putString("tab",oldTab).commit();directory.deleteRecursively()}
+    }
     @Test fun oldWordDocParsesOnAndroidWithoutDesktopJava() {
         // Apache POI test-data/document/simple.doc, Apache-2.0.
         val file=File(context.cacheDir,"simple.doc")

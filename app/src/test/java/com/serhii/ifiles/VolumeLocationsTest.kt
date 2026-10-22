@@ -53,6 +53,13 @@ class VolumeLocationsTest {
         assertTrue(e.requiresGrant)
         assertTrue(e.ref.startsWith("ifiles-volume:"))
     }
+    @Test fun wholeVolumeGrantWorksWithoutPhysicalDirectory() {
+        val ref="content://com.android.externalstorage.documents/tree/ABCD-1234%3A"
+        val e=VolumeLocations.entries(s,listOf(AttachedVolume("ABCD-1234","USB",Environment.MEDIA_MOUNTED,false,null)),listOf(Entry(ref,"USB",true)),false).single()
+        assertEquals(ref,e.ref);assertFalse(e.requiresGrant)
+        val sub=Entry(ref+"Documents","Documents",true)
+        assertTrue(VolumeLocations.entries(s,listOf(AttachedVolume("ABCD-1234","USB",Environment.MEDIA_MOUNTED,false,null)),listOf(sub),false).single().requiresGrant)
+    }
     @Test fun detachedSafVolumeIsHiddenWithoutDeletingItsSavedGrant() {
         val usb="content://com.android.externalstorage.documents/tree/ABCD-1234%3A"
         val phone="content://com.android.externalstorage.documents/tree/primary%3ADocuments"

@@ -37,8 +37,13 @@ object VolumeLocations {
         volumes.filter { !it.primary && mounted(it.state) }.map { volume ->
             val directory=volume.directory?.canonicalFile
             // Prefer an existing SAF grant for the whole volume; never request it again.
-            val grant=if(directory==null)null else saved.filterNot { it.requiresGrant }.firstOrNull { entry ->
-                runCatching { s.physical(entry.ref)?.canonicalFile==directory }.getOrDefault(false)
+            val grant=saved.filterNot { it.requiresGrant }.firstOrNull { entry ->
+                val wholeVolume=runCatching {
+                    val uri=Uri.parse(entry.ref)
+                    uri.authority=="com.android.externalstorage.documents" &&
+                        DocumentsContract.getTreeDocumentId(uri).equals(volume.id+":",true)
+                }.getOrDefault(false)
+                wholeVolume || (directory!=null && runCatching { s.physical(entry.ref)?.canonicalFile==directory }.getOrDefault(false))
             }
             val direct=allAccess && directory?.isDirectory==true && directory.canRead()
             Entry(

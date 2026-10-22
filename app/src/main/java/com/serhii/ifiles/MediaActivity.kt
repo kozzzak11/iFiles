@@ -78,7 +78,13 @@ class MediaActivity:ComponentActivity() {
                                 Text(current?.name ?: title,Modifier.weight(1f),maxLines=1)
                                 if(video && currentKind=="media")IconButton(onClick={enterPip()}){Icon(Icons.Outlined.PictureInPictureAlt,"Картинка в картинке")}
                                 IconButton(onClick={share()}){Icon(Icons.Outlined.IosShare,"Поделиться")}
-                                IconButton(onClick={share(true)}){Icon(Icons.Outlined.OpenInNew,"Открыть в приложении")}
+                                Box {
+                                    var menu by remember{mutableStateOf(false)}
+                                    IconButton(onClick={menu=true}){Icon(Icons.Outlined.MoreVert,"Ещё")}
+                                    DropdownMenu(expanded=menu,onDismissRequest={menu=false}) {
+                                        DropdownMenuItem(text={Text("Открыть в другом приложении")},onClick={menu=false;share(true)})
+                                    }
+                                }
                             }
                             HorizontalPager(state=pager,userScrollEnabled=false,modifier=Modifier.weight(1f).fillMaxWidth(),key={queue.getOrNull(it)?.ref ?: "media"}) {index->
                                 Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
@@ -94,9 +100,9 @@ class MediaActivity:ComponentActivity() {
                                 }
                             }
                             if(!pip) {
-                                if(queue.size>1)Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
+                                Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
                                     IconButton(enabled=pager.currentPage>0,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage-1)}}){Icon(Icons.Outlined.ChevronLeft,"Предыдущий файл")}
-                                    Text("${pager.currentPage+1} / ${queue.size}")
+                                    Text("${if(queue.isEmpty())1 else pager.currentPage+1} / ${queue.size.coerceAtLeast(1)}")
                                     IconButton(enabled=pager.currentPage<queue.lastIndex,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage+1)}}){Icon(Icons.Outlined.ChevronRight,"Следующий файл")}
                                 }
                                 if(currentKind=="media")TextButton(onClick={controller?.stop();controller?.clearMediaItems();loading=false}){Text("Остановить воспроизведение")}
