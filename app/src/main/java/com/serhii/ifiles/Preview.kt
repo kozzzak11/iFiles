@@ -99,7 +99,11 @@ object Thumbnails {
     var error by remember(e.ref){mutableStateOf<String?>(null)}
     LaunchedEffect(e.ref) {
         try {
-            val file=withContext(Dispatchers.IO){PreviewQueue.save(s.context,e,entries)}
+            val file=withContext(Dispatchers.IO){
+                val parent=s.parentOf(e.ref)
+                val siblings=if(entries.isNotEmpty())entries.filter{parent==null || s.parentOf(it.ref)==parent} else parent?.let{runCatching{s.list(it).filter{x->!PreviewFiles.hidden(x.name)}.sortedBy{x->x.name.lowercase()}}.getOrNull()} ?: emptyList()
+                PreviewQueue.save(s.context,e,siblings)
+            }
             s.context.startActivity(MediaActivity.intent(s.context,e).putExtra("queue",file.name).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
             onClose()
         }catch(ex:CancellationException){throw ex}catch(ex:Exception){error=ex.message ?: "Не удалось открыть просмотр"}

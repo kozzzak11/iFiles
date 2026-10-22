@@ -1,0 +1,3 @@
+poi-simple.doc.base64 is a base64 encoding of Apache POI test-data/document/simple.doc.
+Source: https://github.com/apache/poi/blob/trunk/test-data/document/simple.doc
+Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0

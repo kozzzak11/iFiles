@@ -52,7 +52,10 @@ jobs:
           target: google_apis
           profile: pixel_6
           disable-animations: true
-          script: gradle :app:connectedDebugAndroidTest --stacktrace
+          script: |
+            gradle :app:connectedDebugAndroidTest --stacktrace
+            mkdir -p app/build/reports/preview-screenshots
+            adb pull /sdcard/Android/data/com.serhii.ifiles/files/preview-screenshots app/build/reports/preview-screenshots || true
       - uses: actions/upload-artifact@v4
         with:
           name: iFiles-install-apk

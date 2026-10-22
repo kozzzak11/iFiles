@@ -264,7 +264,7 @@ private val Blue=Color(0xFF007AFF)
                 if(a.current!=null && !a.loading)Text("${a.entries.size} элементов",Modifier.fillMaxWidth().padding(8.dp),textAlign=TextAlign.Center,fontSize=11.sp,color=colors.onSurfaceVariant)
             }
         }
-        preview?.let{e->Preview(e,s,{preview=null},{external(it,false)},{external(it,true)},a.entries)}
+        preview?.let{e->Preview(e,s,{preview=null},{external(it,false)},{external(it,true)},if(a.current!=null)a.entries else emptyList())}
         contextEntry?.let { e ->ModalBottomSheet(onDismissRequest={contextEntry=null}) {
             Row(Modifier.padding(20.dp),verticalAlignment=Alignment.CenterVertically){FileGlyph(e,s,Modifier.size(40.dp));Text(e.name,Modifier.padding(start=12.dp),fontWeight=FontWeight.SemiBold,maxLines=2)}
             val actions=mutableListOf<Pair<String,()->Unit>>()
