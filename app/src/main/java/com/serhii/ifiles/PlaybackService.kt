@@ -78,5 +78,6 @@ class PlaybackService:MediaSessionService() {
 object PlaybackRules {
     fun video(e:Entry)=e.mime.startsWith("video/") || e.name.substringAfterLast('.',"").lowercase() in setOf("mp4","mov","mkv","webm","3gp","avi","m4v","ts","mts","m2ts","mpeg","mpg","flv")
     fun pip(video:Boolean,playWhenReady:Boolean,state:Int)=video && playWhenReady && state!=androidx.media3.common.Player.STATE_ENDED && state!=androidx.media3.common.Player.STATE_IDLE
+    fun stopAfterPipDismiss(wasInPip:Boolean,isInPip:Boolean,video:Boolean)=wasInPip && !isInPip && video
     fun ratio(width:Int,height:Int)=if(width>0 && height>0)(width.toFloat()/height).coerceIn(0.42f,2.38f) else 16f/9f
 }
