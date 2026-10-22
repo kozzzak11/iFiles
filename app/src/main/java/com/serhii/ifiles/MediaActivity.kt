@@ -19,6 +19,8 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -101,9 +103,9 @@ class MediaActivity:ComponentActivity() {
                             }
                             if(!pip) {
                                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
-                                    IconButton(enabled=pager.currentPage>0,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage-1)}}){Icon(Icons.Outlined.ChevronLeft,"Предыдущий файл")}
+                                    IconButton(modifier=Modifier.semantics{contentDescription="Предыдущий файл"},enabled=pager.currentPage>0,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage-1)}}){Icon(Icons.Outlined.ChevronLeft,null)}
                                     Text("${if(queue.isEmpty())1 else pager.currentPage+1} / ${queue.size.coerceAtLeast(1)}")
-                                    IconButton(enabled=pager.currentPage<queue.lastIndex,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage+1)}}){Icon(Icons.Outlined.ChevronRight,"Следующий файл")}
+                                    IconButton(modifier=Modifier.semantics{contentDescription="Следующий файл"},enabled=pager.currentPage<queue.lastIndex,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage+1)}}){Icon(Icons.Outlined.ChevronRight,null)}
                                 }
                                 if(currentKind=="media")TextButton(onClick={controller?.stop();controller?.clearMediaItems();loading=false}){Text("Остановить воспроизведение")}
                             }

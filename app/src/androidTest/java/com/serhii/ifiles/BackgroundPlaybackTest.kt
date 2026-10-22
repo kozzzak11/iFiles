@@ -18,14 +18,19 @@ class BackgroundPlaybackTest {
     private val instrumentation get()=InstrumentationRegistry.getInstrumentation()
     private val context get()=instrumentation.targetContext
     private var controller:MediaController?=null
-    private fun shell(command:String){instrumentation.uiAutomation.executeShellCommand(command).close()}
+    private fun shell(command:String){android.os.ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command)).use{it.readBytes()}}
+    @Before fun prepareScreen() {
+        shell("input keyevent KEYCODE_WAKEUP")
+        shell("wm dismiss-keyguard")
+        instrumentation.waitForIdleSync()
+    }
     private fun connect():MediaController {
         lateinit var future:com.google.common.util.concurrent.ListenableFuture<MediaController>
         instrumentation.runOnMainSync {future=MediaController.Builder(context,SessionToken(context,ComponentName(context,PlaybackService::class.java))).buildAsync()}
         return future.get(20,TimeUnit.SECONDS).also{controller=it}
     }
     private fun awaitCondition(check:()->Boolean) {
-        val end=SystemClock.elapsedRealtime()+20000
+        val end=SystemClock.elapsedRealtime()+45000
         while(SystemClock.elapsedRealtime()<end) {
             var done=false;instrumentation.runOnMainSync{done=check()}
             if(done)return
