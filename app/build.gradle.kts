@@ -6,7 +6,6 @@ plugins {
 android {
     namespace = "com.serhii.ifiles"
     compileSdk = 36
-    testBuildType = "release"
     defaultConfig {
         applicationId = "com.serhii.ifiles"
         minSdk = 30
@@ -33,7 +32,6 @@ android {
     }
     buildTypes {
         release {
-            testProguardFiles("test-proguard-rules.pro")
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("debug")
@@ -60,7 +58,6 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.6.1")
-    androidTestImplementation("com.google.errorprone:error_prone_annotations:2.36.0")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:core:1.6.1")

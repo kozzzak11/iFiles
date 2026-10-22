@@ -38,7 +38,7 @@ jobs:
           elif [ ! -f ~/.android/debug.keystore ]; then
             keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
           fi
-      - run: gradle :app:testDebugUnitTest :app:lintDebug :app:assembleRelease :app:assembleReleaseAndroidTest --stacktrace
+      - run: gradle :app:testDebugUnitTest :app:lintDebug :app:assembleRelease :app:assembleDebugAndroidTest --stacktrace
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -53,7 +53,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            gradle :app:connectedReleaseAndroidTest --stacktrace
+            gradle :app:connectedDebugAndroidTest --stacktrace
             mkdir -p app/build/reports/preview-screenshots
             adb pull /sdcard/Android/data/com.serhii.ifiles/files/preview-screenshots app/build/reports/preview-screenshots || true
       - uses: actions/upload-artifact@v4
