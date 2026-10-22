@@ -236,6 +236,7 @@ class MediaActivity:ComponentActivity() {
 }
 
 @Composable
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 private fun VideoSettingsMenu(
     resizeMode:Int,
     speed:Float,
