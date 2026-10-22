@@ -51,6 +51,7 @@ class MediaActivity:ComponentActivity() {
     private var controller by mutableStateOf<MediaController?>(null)
     private var future:ListenableFuture<MediaController>?=null
     private var pip by mutableStateOf(false)
+    private var pipExitPending=false
     private var fullscreen by mutableStateOf(false)
     private var resizeMode by mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT)
     private var playbackSpeed by mutableFloatStateOf(1f)
@@ -200,7 +201,23 @@ class MediaActivity:ComponentActivity() {
         runCatching {enterPictureInPictureMode(pipParams)}.onSuccess{if(!it)error="Android не разрешил режим «картинка в картинке»"}.onFailure{error="Режим «картинка в картинке» недоступен"}
     }
     override fun onUserLeaveHint(){super.onUserLeaveHint();if(Build.VERSION.SDK_INT<31 && canPip)enterPip()}
-    override fun onPictureInPictureModeChanged(inPip:Boolean,newConfig:Configuration){super.onPictureInPictureModeChanged(inPip,newConfig);pip=inPip}
+    override fun onPictureInPictureModeChanged(inPip:Boolean,newConfig:Configuration){
+        super.onPictureInPictureModeChanged(inPip,newConfig)
+        if(pip && !inPip)pipExitPending=true
+        pip=inPip
+    }
+    override fun onStart(){super.onStart();if(!pip)pipExitPending=false}
+    override fun onStop(){
+        super.onStop()
+        // Expanding the PiP returns this activity to the foreground. Closing the PiP
+        // leaves it stopped; stop the service player so audio cannot continue invisibly.
+        if(pipExitPending){
+            pipExitPending=false
+            controller?.pause()
+            controller?.stop()
+            controller?.clearMediaItems()
+        }
+    }
     private fun share(external:Boolean=false) {val entry=current ?: return;lifecycleScope.launch {
         try {
             val s=Storage(this@MediaActivity);val uri=withContext(Dispatchers.IO){s.externalUri(entry.ref){ensureActive()}}
