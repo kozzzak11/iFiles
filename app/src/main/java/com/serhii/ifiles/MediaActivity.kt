@@ -203,7 +203,7 @@ class MediaActivity:ComponentActivity() {
     override fun onUserLeaveHint(){super.onUserLeaveHint();if(Build.VERSION.SDK_INT<31 && canPip)enterPip()}
     override fun onPictureInPictureModeChanged(inPip:Boolean,newConfig:Configuration){
         super.onPictureInPictureModeChanged(inPip,newConfig)
-        if(pip && !inPip)pipExitPending=true
+        pipExitPending = pipExitPending || PlaybackRules.stopAfterPipDismiss(pip,inPip,video)
         pip=inPip
     }
     override fun onStart(){super.onStart();if(!pip)pipExitPending=false}
