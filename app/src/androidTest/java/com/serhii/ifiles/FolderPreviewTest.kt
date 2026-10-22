@@ -78,11 +78,21 @@ class FolderPreviewTest {
             var initial=0f
             scenario.onActivity { activity->initial=findWeb(activity.window.decorView)!!.actualZoom();assertTrue("Wide sheet should initially fit",initial<0.8f) }
             device.findObject(By.text("100%")).click()
-            device.waitForIdle()
-            scenario.onActivity { activity->val web=findWeb(activity.window.decorView)!!;assertTrue("100% must enlarge the sheet",web.actualZoom()>initial*1.5f);assertTrue("Zoomed sheet must pan",web.canScrollHorizontally(1)) }
+            val zoomDeadline=SystemClock.elapsedRealtime()+5000
+            var zoomed=false
+            while(SystemClock.elapsedRealtime()<zoomDeadline && !zoomed) {
+                scenario.onActivity { activity->val web=findWeb(activity.window.decorView)!!;zoomed=web.actualZoom()>initial*1.5f && web.canScrollHorizontally(1) }
+                if(!zoomed)SystemClock.sleep(100)
+            }
+            assertTrue("100% must enlarge the sheet and allow panning",zoomed)
             device.findObject(By.text("По ширине")).click()
-            device.waitForIdle()
-            scenario.onActivity { activity->val web=findWeb(activity.window.decorView)!!;assertTrue("Fit must restore overview",web.actualZoom()<=initial*1.1f) }
+            val fitDeadline=SystemClock.elapsedRealtime()+5000
+            var fitted=false
+            while(SystemClock.elapsedRealtime()<fitDeadline && !fitted) {
+                scenario.onActivity { activity->fitted=findWeb(activity.window.decorView)!!.actualZoom()<=initial*1.1f }
+                if(!fitted)SystemClock.sleep(100)
+            }
+            assertTrue("Fit must restore overview",fitted)
         }
     }
     @Test fun multiPagePdfScrollsVerticallyAndStaysInSameFile() {
