@@ -33,6 +33,7 @@ android {
     }
     buildTypes {
         release {
+            testProguardFiles("test-proguard-rules.pro")
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("debug")
