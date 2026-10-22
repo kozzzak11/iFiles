@@ -125,12 +125,7 @@ object Thumbnails {
     var html by remember(e.ref){mutableStateOf<String?>(null)}
     var error by remember(e.ref){mutableStateOf<String?>(null)}
     LaunchedEffect(e.ref){try {html=withContext(Dispatchers.IO){val f=File.createTempFile("word-",".tmp",s.context.cacheDir);try{PreviewFiles.copy(s.input(e.ref),f,e.size){ensureActive()};WordDocuments.html(f,e.name.endsWith(".doc",true)){ensureActive()}}finally{f.delete()}}}catch(ex:CancellationException){throw ex}catch(ex:Exception){error=ex.message ?: "Не удалось открыть Word"}}
-    if(error!=null)Text(error!!,Modifier.padding(24.dp)) else if(html==null)CircularProgressIndicator() else AndroidView(factory={ctx->android.webkit.WebView(ctx).apply{
-        settings.javaScriptEnabled=false;settings.allowFileAccess=false;settings.allowContentAccess=false;settings.blockNetworkLoads=true
-        settings.setSupportZoom(true);settings.builtInZoomControls=true;settings.displayZoomControls=false
-        webViewClient=object:android.webkit.WebViewClient(){override fun shouldOverrideUrlLoading(view:android.webkit.WebView,request:android.webkit.WebResourceRequest)=true}
-        loadDataWithBaseURL(null,html!!,"text/html","UTF-8",null)
-    }},onRelease={it.destroy()},modifier=Modifier.fillMaxSize())
+    if(error!=null)Text(error!!,Modifier.padding(24.dp)) else if(html==null)CircularProgressIndicator() else OfficePreview(html!!)
 }
 @Composable private fun SpreadsheetPreview(e:Entry,s:Storage) {
     var sheets by remember(e.ref){mutableStateOf<List<SheetPage>?>(null)}
@@ -150,12 +145,7 @@ object Thumbnails {
         Text("Только просмотр · формулы: сохранённые результаты",Modifier.padding(horizontal=12.dp),style=MaterialTheme.typography.labelSmall)
         val page=html
         if(page==null)CircularProgressIndicator() else key(e.ref,selected,dark) {
-            AndroidView(factory={ctx->android.webkit.WebView(ctx).apply {
-                settings.javaScriptEnabled=false;settings.allowFileAccess=false;settings.allowContentAccess=false
-                settings.blockNetworkLoads=true;settings.setSupportZoom(true);settings.builtInZoomControls=true;settings.displayZoomControls=false
-                webViewClient=object:android.webkit.WebViewClient(){override fun shouldOverrideUrlLoading(view:android.webkit.WebView,request:android.webkit.WebResourceRequest)=true}
-                loadDataWithBaseURL(null,page,"text/html","UTF-8",null)
-            }},onRelease={it.destroy()},modifier=Modifier.fillMaxSize())
+            OfficePreview(page)
         }
     }
 }
@@ -209,42 +199,4 @@ object Thumbnails {
         }} catch(ex: CancellationException){throw ex} catch(ex: Exception){error=ex.message ?: "Не удалось прочитать документ"}
     }
     PreviewText(text,error)
-}
-@Composable private fun PdfPreview(e: Entry,s: Storage) {
-    var page by remember(e.ref){mutableIntStateOf(0)};var count by remember(e.ref){mutableIntStateOf(0)}
-    var bitmap by remember(e.ref){mutableStateOf<Bitmap?>(null)};var error by remember(e.ref){mutableStateOf<String?>(null)}
-    var local by remember(e.ref){mutableStateOf<File?>(null)}
-    // Each session owns its file. NonCancellable finally waits for I/O before cleanup.
-    LaunchedEffect(e.ref) {
-        val f=File.createTempFile("pdf-",".pdf",s.context.cacheDir)
-        try {
-            withContext(Dispatchers.IO){PreviewFiles.copy(s.input(e.ref),f,e.size){ensureActive()}}
-            local=f
-            awaitCancellation()
-        } catch(ex: CancellationException){throw ex} catch(ex: Exception){error=ex.message ?: "PDF недоступен. Проверьте USB."}
-        finally {local=null;withContext(NonCancellable+Dispatchers.IO){f.delete()}}
-    }
-    LaunchedEffect(local,page) {
-        val f=local ?: return@LaunchedEffect;bitmap=null;error=null
-        try {
-            val rendered=withContext(Dispatchers.IO) {
-                ParcelFileDescriptor.open(f,ParcelFileDescriptor.MODE_READ_ONLY).use { fd -> PdfRenderer(fd).use { pdf ->
-                    require(pdf.pageCount>0){"В PDF нет страниц"}
-                    pdf.openPage(page.coerceIn(0,pdf.pageCount-1)).use { p ->
-                        val ratio=minOf(1440f/p.width,4096f/p.height)
-                        val b=Bitmap.createBitmap(maxOf(1,(p.width*ratio).toInt()),maxOf(1,(p.height*ratio).toInt()),Bitmap.Config.ARGB_8888)
-                        try { b.eraseColor(android.graphics.Color.WHITE);p.render(b,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);pdf.pageCount to b }
-                        catch(ex: Exception){b.recycle();throw ex}
-                    }
-                }}
-            }
-            count=rendered.first;bitmap=rendered.second
-        } catch(ex: CancellationException){throw ex} catch(ex: Exception){error=ex.message ?: "PDF повреждён или защищён паролем"}
-    }
-    Column(Modifier.fillMaxSize()) {
-        Box(Modifier.weight(1f),contentAlignment=Alignment.Center) {if(error!=null)Text(error!!,Modifier.padding(24.dp)) else if(bitmap==null)CircularProgressIndicator() else ZoomImage(bitmap!!)}
-        if(count>0)Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center,verticalAlignment=Alignment.CenterVertically) {
-            TextButton(onClick={page--},enabled=page>0){Text("Назад")};Text("${page+1} / $count");TextButton(onClick={page++},enabled=page+1<count){Text("Далее")}
-        }
-    }
 }

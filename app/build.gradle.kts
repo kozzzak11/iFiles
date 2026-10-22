@@ -6,12 +6,13 @@ plugins {
 android {
     namespace = "com.serhii.ifiles"
     compileSdk = 36
+    testBuildType = "release"
     defaultConfig {
         applicationId = "com.serhii.ifiles"
         minSdk = 30
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }

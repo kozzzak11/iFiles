@@ -48,6 +48,6 @@ object WordDocuments {
                 XP.END_TAG->when(p.name){"t"->{text=false;body.append("</span>")};"p"->body.append("</p>");"tc"->body.append("</td>");"tr"->body.append("</tr>");"tbl"->body.append("</table>")}
             }}
         }
-        return "<!doctype html><html><head><meta name='viewport' content='width=device-width, initial-scale=1, maximum-scale=5'><style>body{background:#eee;color:#222;margin:0;padding:12px;font:16px/1.5 sans-serif}article{background:white;padding:24px;overflow-wrap:anywhere}p{white-space:pre-wrap;min-height:1em}table{border-collapse:collapse;max-width:100%}td{border:1px solid #bbb;padding:6px;min-width:30px}img{max-width:100%;height:auto}</style></head><body><article>$body</article></body></html>"
+        return "<!doctype html><html><head><meta name='viewport' content='width=device-width, minimum-scale=0.01, maximum-scale=10, user-scalable=yes'><style>body{background:#eee;color:#222;margin:0;padding:12px;font:16px/1.5 sans-serif}article{background:white;padding:24px;overflow-wrap:anywhere}p{white-space:pre-wrap;min-height:1em}table{border-collapse:collapse;max-width:100%}td{border:1px solid #bbb;padding:6px;min-width:30px}img{max-width:100%;height:auto}</style></head><body><article>$body</article></body></html>"
     }
 }

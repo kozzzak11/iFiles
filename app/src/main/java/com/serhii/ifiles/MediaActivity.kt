@@ -13,8 +13,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -82,7 +80,7 @@ class MediaActivity:ComponentActivity() {
                                 IconButton(onClick={share()}){Icon(Icons.Outlined.IosShare,"Поделиться")}
                                 IconButton(onClick={share(true)}){Icon(Icons.Outlined.OpenInNew,"Открыть в приложении")}
                             }
-                            HorizontalPager(state=pager,userScrollEnabled=!pip,modifier=Modifier.weight(1f).fillMaxWidth(),key={queue.getOrNull(it)?.ref ?: "media"}) {index->
+                            HorizontalPager(state=pager,userScrollEnabled=false,modifier=Modifier.weight(1f).fillMaxWidth(),key={queue.getOrNull(it)?.ref ?: "media"}) {index->
                                 Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
                                     if(index==pager.settledPage) {
                                         if(currentKind=="media" || queue.isEmpty()) {
@@ -96,7 +94,7 @@ class MediaActivity:ComponentActivity() {
                                 }
                             }
                             if(!pip) {
-                                if(queue.size>1)Row(Modifier.fillMaxWidth().pointerInput(queue.size){var drag=0f;detectHorizontalDragGestures(onDragStart={drag=0f},onDragEnd={if(kotlin.math.abs(drag)>40){val target=(pager.currentPage+if(drag<0)1 else -1).coerceIn(0,queue.lastIndex);scope.launch{pager.animateScrollToPage(target)}}}){change,amount->change.consume();drag+=amount}},verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
+                                if(queue.size>1)Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
                                     IconButton(enabled=pager.currentPage>0,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage-1)}}){Icon(Icons.Outlined.ChevronLeft,"Предыдущий файл")}
                                     Text("${pager.currentPage+1} / ${queue.size}")
                                     IconButton(enabled=pager.currentPage<queue.lastIndex,onClick={scope.launch{pager.animateScrollToPage(pager.currentPage+1)}}){Icon(Icons.Outlined.ChevronRight,"Следующий файл")}

@@ -45,8 +45,16 @@ class FolderPreviewTest {
                 if(i==3)assertTrue("Word body must render",device.wait(Until.hasObject(By.text("Readable Word document")),15000))
                 val screenshots=File(context.getExternalFilesDir(null),"preview-screenshots").apply{mkdirs()}
                 device.takeScreenshot(File(screenshots,"preview-$i.png"))
-                if(i==0){val bounds=device.displayWidth;device.swipe(bounds*4/5,device.displayHeight/2,bounds/5,device.displayHeight/2,20)}
-                else if(i<entries.lastIndex)device.findObject(By.desc("Следующий файл")).click()
+                // Swipes in any preview and in the footer must never navigate to another file.
+                val w=device.displayWidth;val h=device.displayHeight
+                device.swipe(w*4/5,h/2,w/5,h/2,20)
+                device.waitForIdle()
+                assertNotNull("Swipe changed the selected file",device.findObject(By.text(e.name)))
+                val footer=device.findObject(By.text("${i+1} / ${entries.size}")).visibleBounds
+                device.swipe(w*3/4,footer.centerY(),w/4,footer.centerY(),20)
+                device.waitForIdle()
+                assertNotNull("Footer swipe changed the selected file",device.findObject(By.text(e.name)))
+                if(i<entries.lastIndex)device.findObject(By.desc("Следующий файл")).click()
             }
             lateinit var future:com.google.common.util.concurrent.ListenableFuture<MediaController>
             ins.runOnMainSync{future=MediaController.Builder(context,SessionToken(context,ComponentName(context,PlaybackService::class.java))).buildAsync()}
@@ -54,6 +62,54 @@ class FolderPreviewTest {
             try{ins.runOnMainSync{assertFalse("Leaving media must pause it",player.playWhenReady)}}finally{ins.runOnMainSync{player.release()}}
             device.findObject(By.desc("Предыдущий файл")).click()
             assertTrue(device.wait(Until.hasObject(By.text("Music.wav")),10000))
+        }
+    }
+    @Test fun wideWorkbookFitsAndZoomControlsWork() {
+        val cells=(0..11).joinToString(""){i->"<c r='${('A'.code+i).toChar()}1' t='inlineStr'><is><t>Column $i content</t></is></c>"}
+        val sheet=zip("Wide.xlsx","xl/workbook.xml" to "<workbook xmlns:r='urn:r'><sheets><sheet name='Wide sheet' r:id='one'/></sheets></workbook>","xl/_rels/workbook.xml.rels" to "<Relationships><Relationship Id='one' Target='worksheets/sheet1.xml'/></Relationships>","xl/worksheets/sheet1.xml" to "<worksheet><sheetData><row>$cells</row></sheetData></worksheet>")
+        fun findWeb(v:android.view.View):OfficeWebView? {
+            if(v is OfficeWebView)return v
+            if(v is android.view.ViewGroup)for(i in 0 until v.childCount)findWeb(v.getChildAt(i))?.let{return it}
+            return null
+        }
+        ActivityScenario.launch<MediaActivity>(MediaActivity.intent(context,sheet)).use { scenario->
+            assertTrue(device.wait(Until.hasObject(By.text("Column 0 content")),15000))
+            device.waitForIdle()
+            var initial=0f
+            scenario.onActivity { activity->initial=findWeb(activity.window.decorView)!!.actualZoom();assertTrue("Wide sheet should initially fit",initial<0.8f) }
+            device.findObject(By.text("100%")).click()
+            device.waitForIdle()
+            scenario.onActivity { activity->val web=findWeb(activity.window.decorView)!!;assertTrue("100% must enlarge the sheet",web.actualZoom()>initial*1.5f);assertTrue("Zoomed sheet must pan",web.canScrollHorizontally(1)) }
+            device.findObject(By.text("По ширине")).click()
+            device.waitForIdle()
+            scenario.onActivity { activity->val web=findWeb(activity.window.decorView)!!;assertTrue("Fit must restore overview",web.actualZoom()<=initial*1.1f) }
+        }
+    }
+    @Test fun multiPagePdfScrollsVerticallyAndStaysInSameFile() {
+        val file=File(context.cacheDir,"Thirty pages.pdf")
+        android.graphics.pdf.PdfDocument().use { pdf->
+            for(i in 1..30){val page=pdf.startPage(android.graphics.pdf.PdfDocument.PageInfo.Builder(595,842,i).create());page.canvas.drawText("Page $i",40f,80f,android.graphics.Paint().apply{textSize=30f});pdf.finishPage(page)}
+            file.outputStream().use{pdf.writeTo(it)}
+        }
+        val entry=Entry(file.toURI().toString(),file.name,false,file.length(),mime="application/pdf")
+        val next=Entry("content://com.serhii.ifiles.test.preview/png","Next.png",false,mime="image/png")
+        val queue=PreviewQueue.save(context,entry,listOf(entry,next))
+        ActivityScenario.launch<MediaActivity>(MediaActivity.intent(context,entry).putExtra("queue",queue.name)).use {
+            assertTrue(device.wait(Until.hasObject(By.desc("Страница PDF 1")),15000))
+            val w=device.displayWidth;val h=device.displayHeight
+            repeat(5){device.swipe(w/2,h*3/4,w/2,h/4,30);device.waitForIdle()}
+            assertNotNull(device.findObject(By.text(file.name)))
+            assertFalse("PDF stayed on first page",device.hasObject(By.text("1 / 30")))
+            device.findObject(By.text("+")).click()
+            device.waitForIdle()
+            assertTrue(device.hasObject(By.text("125%")))
+            device.swipe(w*4/5,h/2,w/5,h/2,20)
+            assertNotNull("Panning PDF changed file",device.findObject(By.text(file.name)))
+            device.findObject(By.text("По ширине")).click()
+            repeat(10){device.swipe(w/2,h/4,w/2,h*3/4,20);device.waitForIdle()}
+            assertTrue(device.wait(Until.hasObject(By.text("1 / 30")),10000))
+            device.findObject(By.desc("Следующий файл")).click()
+            assertTrue(device.wait(Until.hasObject(By.text("Next.png")),10000))
         }
     }
     @Test fun oldWordDocParsesOnAndroidWithoutDesktopJava() {
