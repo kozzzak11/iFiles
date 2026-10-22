@@ -23,6 +23,13 @@ class PreviewFilesTest {
         assertFalse(PlaybackRules.pip(true,false,androidx.media3.common.Player.STATE_READY))
         assertFalse(PlaybackRules.pip(true,true,androidx.media3.common.Player.STATE_ENDED))
     }
+
+    @Test fun closingPipStopsVideoButNeverBackgroundMusic() {
+        assertTrue(PlaybackRules.stopAfterPipDismiss(true,false,true))
+        assertFalse(PlaybackRules.stopAfterPipDismiss(true,false,false))
+        assertFalse(PlaybackRules.stopAfterPipDismiss(false,false,true))
+        assertFalse(PlaybackRules.stopAfterPipDismiss(true,true,true))
+    }
     @Test fun pipAspectRatioRespectsAndroidLimits() {
         assertEquals(2.38f,PlaybackRules.ratio(10000,10),0.001f)
         assertEquals(0.42f,PlaybackRules.ratio(10,10000),0.001f)
