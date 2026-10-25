@@ -119,7 +119,7 @@ class SearchAndHandlerTest {
             type("аренды склада")
             find("В тексте файлов · 2")
             hit("scan-0042.pdf").click()
-            find("Закрыть",15000)
+            find("Готово",15000)
             shot("search-04-open-hit")
         }
     }
