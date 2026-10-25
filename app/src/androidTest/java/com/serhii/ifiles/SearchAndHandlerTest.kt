@@ -47,6 +47,7 @@ class SearchAndHandlerTest {
         }
         throw AssertionError("Indexing did not finish")
     }
+    private fun hit(name: String, timeout: Long=20000)=await(By.descStartsWith("Результат: $name"),"hit $name",timeout)
     private lateinit var s: Storage
     private lateinit var dir: File
 
@@ -106,14 +107,15 @@ class SearchAndHandlerTest {
             val hits=index.search("аренды склада")
             assertEquals("hits: $hits",setOf("scan-0042.pdf","notes.txt"),hits.map { it.name }.toSet())
             desc("Поиск").click(); desc("Поиск").text="аренды склада"
-            desc("Результат: scan-0042.pdf",20000)
-            desc("Результат: notes.txt")
+            try { find("В тексте файлов · 2",20000) } catch(e: AssertionError) { shot("search-debug-failure"); throw e }
+            hit("scan-0042.pdf")
+            hit("notes.txt")
             find("В тексте файлов · 2")
             shot("search-01-results")
             desc("Поиск").text="аренду"
-            desc("Результат: old-1251.txt")
+            hit("old-1251.txt")
             desc("Поиск").text="аренды склада"
-            desc("Результат: scan-0042.pdf").click()
+            hit("scan-0042.pdf").click()
             find("Закрыть",15000)
             shot("search-04-open-hit")
         }
