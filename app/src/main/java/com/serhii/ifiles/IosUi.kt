@@ -155,3 +155,27 @@ data class MenuAction(val label: String, val icon: ImageVector, val destructive:
         if(divider)HorizontalDivider(Modifier.padding(start=if(selecting)118.dp else 82.dp),thickness=0.5.dp,color=Ios.separator(dark))
     }
 }
+
+/** Search result found in a file's text: name, highlighted snippet and the containing folder. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable fun SearchHitRow(hit: SearchHit, s: Storage, dark: Boolean, divider: Boolean, onClick: ()->Unit) {
+    val e=remember(hit.ref){hit.entry(s)}
+    val (plain,ranges)=remember(hit.snippet){Snippets.parse(hit.snippet)}
+    val highlight=if(dark)Color(0x66FFD60A) else Color(0x66FFCC00)
+    val text=remember(plain,ranges,dark){androidx.compose.ui.text.buildAnnotatedString {
+        append(plain)
+        ranges.forEach { r -> if(r.first>=0 && r.last<plain.length)addStyle(androidx.compose.ui.text.SpanStyle(fontWeight=FontWeight.SemiBold,background=highlight),r.first,r.last+1) }
+    }}
+    val folder=remember(hit.ref){runCatching{s.parentOf(hit.ref)?.let{p->if(s.isFile(p))s.file(p).name else null}}.getOrNull()}
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).clickable(onClick=onClick).semantics{contentDescription="Результат: "+hit.name}) {
+        Row(Modifier.fillMaxWidth().padding(start=16.dp,end=12.dp,top=8.dp,bottom=8.dp),verticalAlignment=Alignment.Top) {
+            FileGlyph(e,s,Modifier.size(44.dp))
+            Column(Modifier.weight(1f).padding(start=14.dp)) {
+                Text(hit.name,maxLines=1,overflow=TextOverflow.MiddleEllipsis,fontSize=17.sp)
+                Text(text,fontSize=13.sp,maxLines=3,overflow=TextOverflow.Ellipsis,color=MaterialTheme.colorScheme.onBackground.copy(alpha=.85f))
+                Text(listOfNotNull(folder,dateText(hit.modified).ifEmpty{null},if(hit.size>=0)humanSize(hit.size) else null).joinToString(" – "),fontSize=12.sp,color=Ios.secondary(dark),maxLines=1)
+            }
+        }
+        if(divider)HorizontalDivider(Modifier.padding(start=74.dp),thickness=0.5.dp,color=Ios.separator(dark))
+    }
+}

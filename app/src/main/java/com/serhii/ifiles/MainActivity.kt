@@ -28,6 +28,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -76,7 +78,7 @@ class MainActivity: ComponentActivity() {
             Intent.ACTION_SEND_MULTIPLE -> intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let{refs+=it}
         }
         intent.clipData?.let { clip ->for(i in 0 until clip.itemCount)clip.getItemAt(i).uri?.let { refs+=it } }
-        incoming=refs.filter{it.scheme=="content"}.distinct().map{it.toString()};incomingView=intent.action==Intent.ACTION_VIEW
+        incoming=refs.filter{IncomingUris.accepted(this,it)}.distinct().map{it.toString()};incomingView=intent.action==Intent.ACTION_VIEW
         if(intent.flags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION!=0)refs.forEach { u ->
             runCatching { contentResolver.takePersistableUriPermission(u,Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         }
@@ -108,6 +110,7 @@ private val Blue=Color(0xFF007AFF)
     var confirmTrash by remember{mutableStateOf<List<String>?>(null)};var info by remember{mutableStateOf<Entry?>(null)}
     var toolbar by remember{mutableStateOf(false)}
     var showOperations by remember{mutableStateOf(false)}
+    var showIndex by remember{mutableStateOf(false)}
     var clip by remember{mutableStateOf(runCatching{JSONArray(s.prefs.getString("clipboard","[]")).let{j->(0 until j.length()).map{j.getString(it)}}}.getOrDefault(emptyList()))}
     var cut by remember{mutableStateOf(s.prefs.getBoolean("cut",false))}
     var roots by remember{mutableStateOf<List<Entry>>(emptyList())}
@@ -200,6 +203,8 @@ private val Blue=Color(0xFF007AFF)
                         DropdownMenu(toolbar,{toolbar=false}) {
                             if(a.current!=null)DropdownMenuItem(text={Text("Новая папка")},onClick={toolbar=false;nameValue="Новая папка";nameDialog="mkdir"},leadingIcon={Icon(Icons.Outlined.CreateNewFolder,null)})
                             if(a.entries.isNotEmpty())DropdownMenuItem(text={Text("Выбрать")},onClick={toolbar=false;vm.change{it.copy(selecting=true)}},leadingIcon={Icon(Icons.Outlined.CheckCircle,null)})
+                            if(a.current!=null)DropdownMenuItem(text={Text("Индексировать эту папку")},onClick={toolbar=false;vm.indexHere()},leadingIcon={Icon(Icons.Outlined.ManageSearch,null)})
+                            DropdownMenuItem(text={Text("Поиск по содержимому")},onClick={toolbar=false;showIndex=true},leadingIcon={Icon(Icons.Outlined.TextSnippet,null)})
                             if(a.tab=="Недавние" && a.current==null)DropdownMenuItem(text={Text("Очистить недавние")},onClick={toolbar=false;vm.clearRecents()},leadingIcon={Icon(Icons.Outlined.DeleteSweep,null)})
                             DropdownMenuItem(text={Text(if(a.grid)"Список" else "Значки")},onClick={toolbar=false;vm.grid()})
                             HorizontalDivider()
@@ -216,8 +221,16 @@ private val Blue=Color(0xFF007AFF)
                     }
                 }
                 Text(if(a.selecting)"Выбрано: ${a.selected.size}" else a.current?.name ?: a.tab,Modifier.padding(horizontal=16.dp,vertical=2.dp),fontSize=34.sp,fontWeight=FontWeight.Bold,letterSpacing=0.37.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
-                if(a.tab!="Недавно удалённые" && (a.current!=null || a.tab!="Обзор")) {
-                    IosSearchField(a.query,{vm.query(it)},if(a.current!=null)"Поиск в папке и подпапках" else "Поиск",dark,Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp))
+                if(a.tab!="Недавно удалённые") {
+                    IosSearchField(a.query,{vm.query(it)},if(a.current!=null)"Поиск в папке и подпапках" else if(a.tab=="Обзор")"Поиск по всем файлам" else "Поиск",dark,Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp))
+                }
+                if(a.query.isNotBlank() && a.indexedRoots==0 && a.indexing==null)Text("Поиск по тексту файлов работает после индексации: ⋯ → «Индексировать эту папку» или «Поиск по содержимому».",Modifier.padding(horizontal=20.dp,vertical=2.dp),fontSize=12.sp,color=colors.onSurfaceVariant)
+                a.indexing?.let { job ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal=20.dp).semantics{contentDescription="Индексация"},verticalAlignment=Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp)
+                        Text(job.progress.getString("text") ?: if(job.state==androidx.work.WorkInfo.State.RUNNING)"Индексация…" else "Индексация в очереди",Modifier.weight(1f).padding(8.dp),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp)
+                        TextButton(onClick={vm.cancelIndex()}){Text("Остановить")}
+                    }
                 }
                 a.warning?.let {Text(it,Modifier.padding(horizontal=20.dp,vertical=4.dp),fontSize=12.sp,color=colors.error)}
                 val jobs=a.jobs.filter{!it.state.isFinished}
@@ -254,11 +267,11 @@ private val Blue=Color(0xFF007AFF)
                 AnimatedContent(targetState=a,contentKey={it.current?.ref ?: it.tab},transitionSpec={fadeIn() togetherWith fadeOut()},modifier=Modifier.weight(1f),label="Folder") { folder ->
                     when {
                         folder.tab=="Недавно удалённые" && folder.current==null -> TrashList(trash,onRestore={id->vm.operation("restore",listOf(id))},onChoose={id->destinationAction="restore" to listOf(id);vm.tab("Обзор")},onPurge={ids->confirmTrash=ids.map { "trash:" + it }})
-                        folder.current==null && folder.tab=="Обзор" -> BrowseHome(roots,folder.favorites,s,onOpen={openLocation(it)},onFavorites={vm.tab("Избранное")},onTrash={vm.tab("Недавно удалённые")},onConnect={treePicker.launch(null)},onAllFiles=::launchAllFiles,onUnlink={ref->s.prefs.edit().putStringSet("roots",s.strings("roots")-ref).apply();runCatching{s.resolver.releasePersistableUriPermission(s.uri(ref),Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)};vm.refresh()})
+                        folder.current==null && folder.tab=="Обзор" && folder.query.isBlank() -> BrowseHome(roots,folder.favorites,s,onOpen={openLocation(it)},onFavorites={vm.tab("Избранное")},onTrash={vm.tab("Недавно удалённые")},onConnect={treePicker.launch(null)},onAllFiles=::launchAllFiles,onUnlink={ref->s.prefs.edit().putStringSet("roots",s.strings("roots")-ref).apply();runCatching{s.resolver.releasePersistableUriPermission(s.uri(ref),Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)};vm.refresh()})
                         else -> Box(Modifier.fillMaxSize()) {
                             if(folder.error!=null)Column(Modifier.align(Alignment.Center).padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Outlined.Lock,null,Modifier.size(40.dp));Text(folder.error!!,textAlign=TextAlign.Center);TextButton(onClick={treePicker.launch(null)}){Text("Выбрать папку")};TextButton(onClick={vm.refresh()}){Text("Повторить")}}
-                            else if(folder.entries.isEmpty() && !folder.loading)Column(Modifier.align(Alignment.Center),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Outlined.FolderOpen,null,Modifier.size(64.dp),tint=colors.onSurfaceVariant);Text(if(folder.query.isNotBlank())"Ничего не найдено" else "Здесь пока пусто",color=colors.onSurfaceVariant)}
-                            else if(folder.entries.isNotEmpty()) {
+                            else if(folder.entries.isEmpty() && folder.hits.isEmpty() && !folder.loading)Column(Modifier.align(Alignment.Center),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Outlined.FolderOpen,null,Modifier.size(64.dp),tint=colors.onSurfaceVariant);Text(if(folder.query.isNotBlank())"Ничего не найдено" else "Здесь пока пусто",color=colors.onSurfaceVariant)}
+                            else if(folder.entries.isNotEmpty() || folder.hits.isNotEmpty()) {
                                 // Preview records the file in Recent itself (MediaActivity), for every way a file is opened.
                                 val tap:(Entry)->Unit={e->saveParent(e);if(folder.selecting)vm.select(e.ref) else if(e.directory)vm.open(e) else preview=e}
                                 val long:(Entry)->Unit={saveParent(it);contextEntry=it}
@@ -271,7 +284,7 @@ private val Blue=Color(0xFF007AFF)
                                     if(folder.grid)vm.saveScroll(scrollKey,gridState.firstVisibleItemIndex,gridState.firstVisibleItemScrollOffset)
                                     else vm.saveScroll(scrollKey,listState.firstVisibleItemIndex,listState.firstVisibleItemScrollOffset)
                                 }}
-                                if(folder.grid)LazyVerticalGrid(GridCells.Adaptive(105.dp),state=gridState,contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+                                if(folder.grid && folder.query.isBlank())LazyVerticalGrid(GridCells.Adaptive(105.dp),state=gridState,contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
                                     items(folder.entries,key={it.ref}){e->FileCell(e,s,true,e.ref in folder.selected,folder.selecting,e.ref in folder.favorites,{tap(e)},{long(e)})}
                                 } else LazyColumn(state=listState,contentPadding=PaddingValues(vertical=4.dp)) {
                                     itemsIndexed(folder.entries,key={_,e->e.ref}){i,e->
@@ -282,6 +295,10 @@ private val Blue=Color(0xFF007AFF)
                                                 SwipeAction("Удалить",Icons.Outlined.Delete,Ios.Red){saveParent(e);trashNow(listOf(e.ref))})) {
                                             IosFileRow(e,s,dark,e.ref in folder.selected,folder.selecting,favorite,i<folder.entries.lastIndex,{tap(e)},{long(e)})
                                         }
+                                    }
+                                    if(folder.hits.isNotEmpty()) {
+                                        item(key="#hits"){Text("В тексте файлов · ${folder.hits.size}",Modifier.padding(start=16.dp,top=18.dp,bottom=6.dp),fontSize=13.sp,fontWeight=FontWeight.SemiBold,color=colors.onSurfaceVariant)}
+                                        itemsIndexed(folder.hits,key={_,h->"hit:"+h.ref}){i,h->SearchHitRow(h,s,dark,i<folder.hits.lastIndex){vm.openHit(h.ref){e->saveParent(e);preview=e}}}
                                     }
                                 }
                             }
@@ -335,12 +352,13 @@ private val Blue=Color(0xFF007AFF)
             }){Text(if(purge)"Удалить навсегда" else "В корзину",color=colors.error)}},dismissButton={TextButton(onClick={confirmTrash=null}){Text("Отмена")}})
         }
         info?.let{e->Properties(e,s){info=null}}
+        if(showIndex)IndexSheet(vm,a,roots){showIndex=false}
         if(showOperations)ModalBottomSheet(onDismissRequest={showOperations=false}) {
             Text("История операций",Modifier.padding(20.dp),fontSize=24.sp,fontWeight=FontWeight.Bold)
             LazyColumn(Modifier.fillMaxWidth().heightIn(max=500.dp),contentPadding=PaddingValues(20.dp)) {
                 if(a.jobs.isEmpty())item{Text("Операций пока нет")}
                 items(a.jobs,key={it.id}){job->Column(Modifier.fillMaxWidth().padding(vertical=8.dp)) {
-                    val result=when(job.state){androidx.work.WorkInfo.State.SUCCEEDED->if(job.outputData.getString("error")!=null)"Ошибка" else "Завершено";androidx.work.WorkInfo.State.FAILED->"Ошибка";androidx.work.WorkInfo.State.CANCELLED->"Отменено: проверьте назначение и корзину";androidx.work.WorkInfo.State.RUNNING->"Выполняется";else->"В очереди"}
+                    val result=when(job.state){androidx.work.WorkInfo.State.SUCCEEDED->if(job.outputData.getBoolean("cancelled",false))"Отменено" else if(job.outputData.getString("error")!=null)"Ошибка" else "Завершено";androidx.work.WorkInfo.State.FAILED->"Ошибка";androidx.work.WorkInfo.State.CANCELLED->"Отменено: проверьте назначение и корзину";androidx.work.WorkInfo.State.RUNNING->"Выполняется";else->"В очереди"}
                     Text(result,fontWeight=FontWeight.SemiBold)
                     Text(job.outputData.getString("error") ?: job.progress.getString("file") ?: job.id.toString(),fontSize=12.sp)
                     if(!job.state.isFinished)TextButton(onClick={vm.cancel(job.id)}){Text("Отменить")}
@@ -470,3 +488,40 @@ private val Blue=Color(0xFF007AFF)
         Text(e.name,fontWeight=FontWeight.Bold);Text("Тип: ${if(e.directory)"Папка" else e.mime}");Text("Размер: ${humanSize(bytes)}");if(e.directory)Text("Файлов: $count");Text("Изменён: ${dateText(e.modified)}");Text(e.ref,fontSize=11.sp);error?.let{Text(it,color=MaterialTheme.colorScheme.error)}
     }},confirmButton={TextButton(onClick=close){Text("Готово")}})
 }
+
+/** Content search settings: indexed places, refresh/remove, opt-in automatic indexing. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun IndexSheet(vm: FilesViewModel,a: ScreenState,places: List<Entry>,close:()->Unit) {
+    val context=androidx.compose.ui.platform.LocalContext.current
+    var info by remember{mutableStateOf<List<ContentIndex.RootInfo>>(emptyList())}
+    var auto by remember{mutableStateOf(Indexing.auto(context))}
+    LaunchedEffect(a.indexJobs,a.indexedRoots){info=vm.indexInfo()}
+    val names=places.associate{it.ref to it.name}
+    ModalBottomSheet(onDismissRequest=close) {
+        LazyColumn(Modifier.fillMaxWidth().heightIn(max=560.dp),contentPadding=PaddingValues(horizontal=20.dp,vertical=4.dp)) {
+            item {Text("Поиск по содержимому",fontSize=24.sp,fontWeight=FontWeight.Bold)}
+            item {Text("iFiles хранит собственный индекс текста (TXT, код, Word, Excel, PDF) только на этом устройстве. Обновление учитывает размер и дату изменения, удалённые файлы убираются из индекса.",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(vertical=8.dp))}
+            item {Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)){Text("Автоматическая индексация");Text("Память iFiles, телефон, USB/SD и добавленные папки — раз в 12 часов",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                Switch(auto,{auto=it;vm.setAutoIndex(it)})
+            }}
+            a.indexing?.let{job->item {Row(verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp);Text(job.progress.getString("text") ?: "Индексация…",Modifier.weight(1f).padding(8.dp),fontSize=12.sp,maxLines=2);TextButton(onClick={vm.cancelIndex()}){Text("Остановить")}}}}
+            item {Text("Проиндексировано",Modifier.padding(top=12.dp,bottom=4.dp),fontWeight=FontWeight.SemiBold)}
+            if(info.isEmpty())item {Text("Пока ничего. Откройте папку и выберите ⋯ → «Индексировать эту папку».",fontSize=13.sp)}
+            items(info,key={it.root}){r->Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(names[r.root] ?: indexRootName(r.root),maxLines=1,overflow=TextOverflow.Ellipsis)
+                    Text("${r.files} файлов · ${dateText(r.updated)}"+if(!r.complete)" · не завершено" else "",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick={vm.indexRoots(listOf(r.root))}){Icon(Icons.Outlined.Refresh,"Обновить индекс")}
+                IconButton(onClick={vm.forgetIndex(r.root)}){Icon(Icons.Outlined.DeleteOutline,"Удалить из индекса")}
+            }}
+            item {Row(Modifier.padding(vertical=12.dp)) {
+                TextButton(enabled=info.isNotEmpty(),onClick={vm.indexRoots(info.map{it.root})}){Text("Обновить всё")}
+                TextButton(onClick={vm.indexRoots(Indexing.autoRoots(vm.storage))}){Text("Индексировать все места")}
+            }}
+        }
+    }
+}
+
+private fun indexRootName(root: String): String = android.net.Uri.decode(root.trimEnd('/').substringAfterLast('/')).substringAfterLast(':').substringAfterLast('/').ifEmpty{root}
