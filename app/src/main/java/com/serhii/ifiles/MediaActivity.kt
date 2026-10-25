@@ -43,6 +43,8 @@ import kotlinx.coroutines.*
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MediaActivity:ComponentActivity() {
     companion object {
+        /** Opened from another app ("Open with"): the transient URI is not added to recents. */
+        const val EXTERNAL="external"
         fun intent(context:android.content.Context,e:Entry)=Intent(context,MediaActivity::class.java)
             .putExtra("ref",e.ref).putExtra("name",e.name).putExtra("size",e.size)
             .putExtra("mime",e.mime).putExtra("video",PlaybackRules.video(e))
@@ -171,7 +173,7 @@ class MediaActivity:ComponentActivity() {
             try {
                 val s=Storage(this@MediaActivity)
                 val result=withContext(Dispatchers.IO){val actual=PreviewFiles.resolve(s,entry);actual to s.input(actual.ref).use{PreviewFiles.kind(actual,PreviewFiles.read(it,512))}}
-                current=result.first;currentKind=result.second;s.recent(result.first.ref)
+                current=result.first;currentKind=result.second;if(!intent.getBooleanExtra(EXTERNAL,false))s.recent(result.first.ref)
                 if(currentKind=="media")play(result.first) else {controller?.pause();loading=false;sync()}
             }catch(ex:CancellationException){throw ex}catch(ex:Exception){error=ex.message ?: "Файл недоступен. Проверьте USB.";loading=false}
         }

@@ -17,11 +17,18 @@ data class ScreenState(
     val showHidden: Boolean=false, val loading: Boolean=false, val error: String?=null, val warning: String?=null, val query: String="", val grid: Boolean=false,
     val sort: String="Имя",val descending: Boolean=false,val selected: Set<String> = emptySet(),
     val selecting: Boolean=false, val favorites: Set<String> = emptySet(),val theme: String="Системная",
-    val jobs: List<WorkInfo> = emptyList(), val notice: String? = null, val locationsVersion: Long = 0
-) { val current: Entry? get()=stack.lastOrNull() }
+    val jobs: List<WorkInfo> = emptyList(), val notice: String? = null, val locationsVersion: Long = 0,
+    /** Text matches from the content index (files whose name did not already match). */
+    val hits: List<SearchHit> = emptyList(), val indexJobs: List<WorkInfo> = emptyList(), val indexedRoots: Int = 0
+) { val current: Entry? get()=stack.lastOrNull()
+    val globalSearch: Boolean get()=current==null && tab=="Обзор" && query.isNotBlank()
+    val indexing: WorkInfo? get()=indexJobs.firstOrNull { it.state==WorkInfo.State.RUNNING } ?: indexJobs.firstOrNull { !it.state.isFinished }
+}
 
 class FilesViewModel(app: Application): AndroidViewModel(app) {
     val storage=Storage(app)
+    val index=ContentIndex.get(app)
+    private var previousIndex=emptyMap<java.util.UUID,WorkInfo.State>()
     private val mutable=MutableStateFlow(ScreenState(showHidden=storage.prefs.getBoolean("showHidden",false),grid=storage.prefs.getBoolean("grid",false),sort=storage.prefs.getString("sort","Имя")!!,theme=storage.prefs.getString("theme","Системная")!!))
     val state=mutable.asStateFlow();private var loadJob: Job?=null
     private var previousJobs=emptyMap<java.util.UUID,WorkInfo.State>()
@@ -60,6 +67,40 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
                     refresh()
                 }
             }
+        }
+    }
+    init {
+        viewModelScope.launch {
+            WorkManager.getInstance(app).getWorkInfosForUniqueWorkFlow(Indexing.QUEUE).collect { jobs ->
+                val completed=jobs.filter { it.state.isFinished && previousIndex[it.id]?.isFinished == false }
+                previousIndex=jobs.associate { it.id to it.state }
+                change { it.copy(indexJobs=jobs) }
+                completed.lastOrNull()?.let { job ->
+                    if(job.state==WorkInfo.State.SUCCEEDED) {
+                        val d=job.outputData
+                        notice("Индекс обновлён: ${d.getInt("seen",0)} файлов"+(if(d.getInt("unavailable",0)>0)", недоступно мест: ${d.getInt("unavailable",0)}" else ""))
+                    } else if(job.state==WorkInfo.State.CANCELLED)notice("Индексация остановлена. Уже найденное сохранено.")
+                    refresh()
+                }
+            }
+        }
+    }
+    fun indexHere() {
+        val ref=state.value.current?.ref ?: return
+        Indexing.enqueue(getApplication(),listOf(ref)); notice("Индексация «${state.value.current?.name}» запущена")
+    }
+    fun indexRoots(roots: List<String>) { Indexing.enqueue(getApplication(),roots); notice("Индексация запущена") }
+    fun cancelIndex() { Indexing.cancel(getApplication()) }
+    fun setAutoIndex(enabled: Boolean) { Indexing.setAuto(getApplication(),enabled) }
+    fun forgetIndex(root: String) { viewModelScope.launch(Dispatchers.IO) { Indexing.forget(getApplication(),root); withContext(Dispatchers.Main) { refresh() } } }
+    suspend fun indexInfo(): List<ContentIndex.RootInfo> = withContext(Dispatchers.IO) { runCatching { index.rootInfo() }.getOrDefault(emptyList()) }
+    /** A hit whose file is gone (deleted in the app or elsewhere) is dropped from the index right away. */
+    fun staleHit(ref: String) { viewModelScope.launch(Dispatchers.IO) { runCatching { index.remove(ref) } }; change { it.copy(hits=it.hits.filterNot { h -> h.ref==ref },entries=it.entries.filterNot { e -> e.ref==ref }) }; notice("Файл больше не существует") }
+    /** Opens a search hit; drops it from the index only if the file is really gone (not on an unplugged drive). */
+    fun openHit(ref: String, open: (Entry)->Unit) {
+        viewModelScope.launch {
+            val r=withContext(Dispatchers.IO) { runCatching { storage.stat(ref) } }
+            r.onSuccess(open).onFailure { e -> if(withContext(Dispatchers.IO) { missing(ref) }) staleHit(ref) else notice("Файл недоступен: ${e.message}") }
         }
     }
     private val scroll=HashMap<String,Pair<Int,Int>>()
@@ -101,7 +142,7 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
             if(debounce)delay(250)
             val a=state.value;change { it.copy(loading=true,error=null,warning=null,favorites=storage.strings("favorites")) }
             try {
-                var skipped=0
+                var skipped=0; var hits=emptyList<SearchHit>(); var indexedRoots=0
                 val result=withContext(Dispatchers.IO) {
                     val base=when {
                         a.current!=null -> storage.list(a.current!!.ref)
@@ -115,7 +156,14 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
                         else -> emptyList()
                     }
                     val visible=base.filter { a.showHidden || !PreviewFiles.hidden(it.name) }
-                    val entries=if(a.query.isBlank())visible else {
+                    // Content index: instant (no walk), scoped to the open folder, otherwise everything indexed.
+                    val indexHits=if(a.query.isBlank())emptyList() else runCatching { index.search(a.query,a.current?.ref,300) }.getOrDefault(emptyList())
+                        .filter { h -> val gone=storage.isFile(h.ref) && !storage.file(h.ref).exists(); if(gone)runCatching { index.remove(h.ref) }; !gone }
+                    indexedRoots=runCatching { index.roots().size }.getOrDefault(0)
+                    val entries=if(a.query.isBlank())visible else if(a.globalSearch) {
+                        val words=ContentIndex.words(a.query)
+                        indexHits.filter { h -> words.all { h.name.contains(it,true) } }.map { it.entry(storage) }
+                    } else {
                         val found=ArrayList<Entry>(); val queue=java.util.ArrayDeque<Entry>()
                         queue.addAll(visible);val visited=hashSetOf<String>()
                         while(queue.isNotEmpty()) {
@@ -136,11 +184,14 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
                         else -> compareBy<Entry> { it.name.lowercase() }
                     }
                     val order=if(a.descending)comparator.reversed() else comparator
-                    if(a.tab=="Недавние" && a.sort=="Открытые" && a.current==null && a.query.isBlank()) entries
+                    val sorted=if(a.tab=="Недавние" && a.sort=="Открытые" && a.current==null && a.query.isBlank()) entries
                     else entries.sortedWith(compareByDescending<Entry>{it.directory}.then(order))
+                    val shown=sorted.map { it.ref }.toHashSet()
+                    hits=indexHits.filter { it.inContent && it.ref !in shown }
+                    sorted
                 }
-                change { it.copy(entries=result,loading=false,warning=if(skipped>0)"Поиск: нет доступа к $skipped папкам. Результаты неполные." else null) }
-            } catch(e: CancellationException) {throw e} catch(e: Exception) {change { it.copy(loading=false,error=e.message ?: "Нет доступа",entries=emptyList()) }}
+                change { it.copy(entries=result,hits=hits,indexedRoots=indexedRoots,loading=false,warning=if(skipped>0)"Поиск: нет доступа к $skipped папкам. Результаты неполные." else null) }
+            } catch(e: CancellationException) {throw e} catch(e: Exception) {change { it.copy(loading=false,error=e.message ?: "Нет доступа",entries=emptyList(),hits=emptyList()) }}
         }
     }
     fun operation(kind: String, refs: List<String> = state.value.selected.toList(), parent: String=state.value.current?.ref ?: "",name: String="",sourceParent: String=state.value.current?.ref ?: "") {
@@ -148,5 +199,6 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
         change { it.copy(selected=emptySet(),selecting=false,notice="Операция добавлена") }
     }
     suspend fun roots(): List<Entry> = withContext(Dispatchers.IO) { DeviceLocations(storage).roots() }
-    fun cancel(id: java.util.UUID) {WorkManager.getInstance(getApplication()).cancelWorkById(id)}
+    /** Cancels only this operation; the jobs queued behind it keep running (see [Operations.cancel]). */
+    fun cancel(id: java.util.UUID) {Operations.cancel(getApplication(),id);notice("Отмена…")}
 }

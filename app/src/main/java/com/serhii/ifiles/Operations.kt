@@ -32,7 +32,24 @@ object Operations {
         File(context.filesDir,"tasks").listFiles().orEmpty().filter { now-it.lastModified()>week }.forEach { it.delete() }
     }
     fun clean(context: Context, id: UUID) {
-        listOf("json","started","result").forEach { File(context.filesDir,"tasks/$id.$it").delete() }
+        listOf("json","started","result","cancel").forEach { File(context.filesDir,"tasks/$id.$it").delete() }
+    }
+    /**
+     * Cancels one operation without WorkManager.cancelWorkById: cancelling a job inside an APPEND chain cancels
+     * every job queued behind it. Instead the job is flagged; it stops at its next checkpoint (or is skipped if it
+     * has not started yet) and finishes "successfully" with a cancelled result, so the rest of the queue runs.
+     */
+    fun cancel(context: Context, id: UUID) {
+        val flag=cancelFlag(context,id); flag.parentFile?.mkdirs(); flag.writeText("cancel")
+    }
+    fun cancelFlag(context: Context, id: UUID)=File(context.filesDir,"tasks/$id.cancel")
+    const val CANCELLED="Операция отменена"
+}
+/** Receives the notification's "Отменить" action (not exported: only our own PendingIntent can reach it). */
+class CancelOperationReceiver: android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val id=runCatching { UUID.fromString(intent.getStringExtra("id")) }.getOrNull() ?: return
+        Operations.cancel(context,id)
     }
 }
 class OperationWorker(context: Context, params: WorkerParameters): CoroutineWorker(context,params) {
@@ -43,12 +60,17 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
         // Never return failure: in an APPEND chain one failed job would fail every queued job after it.
         // Errors are reported through output data instead and the queue keeps going.
         if(started.exists()) { Operations.clean(applicationContext,id); return@withContext Result.success(workDataOf("error" to "Операция прервалась. Проверьте исходник, папку назначения и корзину перед повтором.")) }
+        val flag=Operations.cancelFlag(applicationContext,id)
+        if(flag.exists()) { Operations.clean(applicationContext,id); return@withContext Result.success(workDataOf("error" to Operations.CANCELLED,"cancelled" to true)) }
+        var checked=0L; var flagged=false
+        // Checked at every engine checkpoint (per 256 KB buffer); the file check is throttled.
+        val stop={ if(!flagged) { val now=System.currentTimeMillis(); if(now-checked>250) { checked=now; flagged=flag.exists() } }; isStopped || flagged }
         try {
             val r=s.read(task);val kind=r.getString("kind")
             setForeground(notification("Подготовка…"))
             s.atomic(started,JSONObject().put("state","started"))
             var last=0L
-            val engine=FileEngine(s,{ isStopped }) { name ->
+            val engine=FileEngine(s,stop) { name ->
                 val now=System.currentTimeMillis()
                 if(now-last>400) { last=now;setProgressAsync(workDataOf("file" to name.take(150))) }
             }
@@ -70,8 +92,10 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
             Result.success(workDataOf("message" to "Готово"))
         } catch(e: Exception) {
             if(e is kotlinx.coroutines.CancellationException)throw e
+            val cancelled=flag.exists()
             Operations.clean(applicationContext,id)
-            Result.success(workDataOf("error" to (e.message ?: "Операция не выполнена").take(1000)))
+            if(cancelled)Result.success(workDataOf("error" to (Operations.CANCELLED+". "+(e.message ?: "")).take(1000),"cancelled" to true))
+            else Result.success(workDataOf("error" to (e.message ?: "Операция не выполнена").take(1000)))
         }
     }
     private fun notification(text: String): ForegroundInfo {
@@ -79,7 +103,7 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
         val nm=context.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("operations","Файловые операции",NotificationManager.IMPORTANCE_LOW))
         val open=PendingIntent.getActivity(context,0,Intent(context,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val cancel=WorkManager.getInstance(context).createCancelPendingIntent(id)
+        val cancel=PendingIntent.getBroadcast(context,id.hashCode(),Intent(context,CancelOperationReceiver::class.java).putExtra("id",id.toString()),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val n=NotificationCompat.Builder(context,"operations").setSmallIcon(android.R.drawable.stat_notify_sync).setContentTitle("iFiles").setContentText(text).setContentIntent(open).setOngoing(true)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel,"Отменить",cancel).build()
         return ForegroundInfo(id.hashCode(),n,ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)

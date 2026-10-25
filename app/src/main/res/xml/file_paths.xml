@@ -1,1 +1,2 @@
-<paths><external-path name="shared" path="." /><files-path name="local" path="." /><cache-path name="preview" path="." /></paths>
+<!-- Only user-visible places are shareable: shared storage, the iFiles folder and staged copies. Trash, task files, the search index and preferences are never exposed. -->
+<paths><external-path name="shared" path="." /><files-path name="local" path="Documents/" /><cache-path name="preview" path="shared/" /></paths>
