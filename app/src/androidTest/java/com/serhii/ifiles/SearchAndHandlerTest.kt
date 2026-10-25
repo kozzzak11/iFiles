@@ -86,7 +86,9 @@ class SearchAndHandlerTest {
         File(dir,"Отчёт.txt").writeText("Ничего общего")
         // Enough files that the progress row and the notification are visible for a while.
         for(f in 0 until 60) { val sub=File(dir,"Архив/папка-$f").apply { mkdirs() }; for(i in 0 until 100) File(sub,"запись-$i.txt").writeText("Запись $f/$i: инвентаризация, накладная, приход и расход.\n".repeat(30)) }
-        ActivityScenario.launch<MainActivity>(Intent(context,MainActivity::class.java)).use {
+        ActivityScenario.launch<MainActivity>(Intent(context,MainActivity::class.java)).use { scenario ->
+            // Typing Cyrillic through UiAutomator is unreliable on the emulator IME; drive the same ViewModel the search field uses.
+            fun type(q: String)=scenario.onActivity { androidx.lifecycle.ViewModelProvider(it)[FilesViewModel::class.java].query(q) }
             desc("Поиск")
             Indexing.enqueue(context,listOf(s.local))
             desc("Индексация",30000)
@@ -106,15 +108,16 @@ class SearchAndHandlerTest {
             assertTrue("PDF text: $pdfText",pdfText.contains("warehouse"))
             val hits=index.search("аренды склада")
             assertEquals("hits: $hits",setOf("scan-0042.pdf","notes.txt"),hits.map { it.name }.toSet())
-            desc("Поиск").click(); desc("Поиск").text="аренды склада"
+            type("аренды склада")
             try { find("В тексте файлов · 2",20000) } catch(e: AssertionError) { shot("search-debug-failure"); throw e }
             hit("scan-0042.pdf")
             hit("notes.txt")
             find("В тексте файлов · 2")
             shot("search-01-results")
-            desc("Поиск").text="аренду"
+            type("аренду")
             hit("old-1251.txt")
-            desc("Поиск").text="аренды склада"
+            type("аренды склада")
+            find("В тексте файлов · 2")
             hit("scan-0042.pdf").click()
             find("Закрыть",15000)
             shot("search-04-open-hit")
