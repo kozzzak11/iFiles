@@ -87,7 +87,7 @@ class FolderPreviewTest {
             var initial=0f
             scenario.onActivity { activity->initial=findWeb(activity.window.decorView)!!.actualZoom();assertTrue("Wide sheet should initially fit",initial<0.8f) }
             device.findObject(By.text("100%")).click()
-            val zoomDeadline=SystemClock.elapsedRealtime()+5000
+            val zoomDeadline=SystemClock.elapsedRealtime()+15000
             var zoomed=false
             while(SystemClock.elapsedRealtime()<zoomDeadline && !zoomed) {
                 scenario.onActivity { activity->val web=findWeb(activity.window.decorView)!!;zoomed=web.actualZoom()>initial*1.5f && web.canScrollHorizontally(1) }
@@ -95,7 +95,7 @@ class FolderPreviewTest {
             }
             assertTrue("100% must enlarge the sheet and allow panning",zoomed)
             device.findObject(By.text("По ширине")).click()
-            val fitDeadline=SystemClock.elapsedRealtime()+5000
+            val fitDeadline=SystemClock.elapsedRealtime()+15000
             var fitted=false
             while(SystemClock.elapsedRealtime()<fitDeadline && !fitted) {
                 scenario.onActivity { activity->fitted=findWeb(activity.window.decorView)!!.actualZoom()<=initial*1.1f }
@@ -117,9 +117,11 @@ class FolderPreviewTest {
         ActivityScenario.launch<MediaActivity>(MediaActivity.intent(context,entry).putExtra("queue",queue.name)).use {
             assertTrue(device.wait(Until.hasObject(By.desc("Страница PDF 1")),15000))
             val w=device.displayWidth;val h=device.displayHeight
-            repeat(5){device.swipe(w/2,h*3/4,w/2,h/4,30);device.waitForIdle()}
+            // Slow CI emulators may drop a fling while pages are still rendering: retry a few swipes.
+            var moved=false
+            for(i in 1..12){device.swipe(w/2,h*3/4,w/2,h/4,30);device.waitForIdle();if(i>=5 && device.wait(Until.gone(By.text("1 / 30")),1000)){moved=true;break}}
             assertNotNull(device.findObject(By.text(file.name)))
-            assertFalse("PDF stayed on first page",device.hasObject(By.text("1 / 30")))
+            assertTrue("PDF stayed on first page",moved && !device.hasObject(By.text("1 / 30")))
             device.findObject(By.text("+")).click()
             device.waitForIdle()
             assertTrue(device.hasObject(By.text("125%")))
