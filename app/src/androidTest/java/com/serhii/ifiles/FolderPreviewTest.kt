@@ -45,11 +45,20 @@ class FolderPreviewTest {
                 if(i==3)assertTrue("Word body must render",device.wait(Until.hasObject(By.text("Readable Word document")),15000))
                 val screenshots=File(context.getExternalFilesDir(null),"preview-screenshots").apply{mkdirs()}
                 device.takeScreenshot(File(screenshots,"preview-$i.png"))
-                // Swipes in any preview and in the footer must never navigate to another file.
                 val w=device.displayWidth;val h=device.displayHeight
-                device.swipe(w*4/5,h/2,w/5,h/2,20)
-                device.waitForIdle()
-                assertNotNull("Swipe changed the selected file",device.findObject(By.text(e.name)))
+                if(i==0) {
+                    // Unzoomed photos swipe to the neighbouring file.
+                    device.swipe(w*4/5,h/2,w/5,h/2,20)
+                    assertTrue("Photo swipe must open the next file",device.wait(Until.hasObject(By.text("2 / ${entries.size}")),10000))
+                    device.findObject(By.desc("Предыдущий файл")).click()
+                    assertTrue(device.wait(Until.hasObject(By.text("1 / ${entries.size}")),10000))
+                    assertTrue(device.wait(Until.hasObject(By.text(e.name)),10000))
+                } else {
+                    // Swipes in non-photo previews (and past the last file) must never navigate to another file.
+                    device.swipe(w*4/5,h/2,w/5,h/2,20)
+                    device.waitForIdle()
+                    assertNotNull("Swipe changed the selected file",device.findObject(By.text(e.name)))
+                }
                 val footer=device.findObject(By.text("${i+1} / ${entries.size}")).visibleBounds
                 device.swipe(w*3/4,footer.centerY(),w/4,footer.centerY(),20)
                 device.waitForIdle()
