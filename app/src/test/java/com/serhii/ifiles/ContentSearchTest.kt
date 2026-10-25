@@ -38,6 +38,8 @@ class ContentSearchTest {
         assertEquals("Привет",TextExtract.decode("Привет".toByteArray(Charsets.UTF_8)))
         assertEquals("Привет",TextExtract.decode(byteArrayOf(0xEF.toByte(),0xBB.toByte(),0xBF.toByte())+"Привет".toByteArray()))
         assertEquals("Счёт оплачен",TextExtract.decode("Счёт оплачен".toByteArray(charset("windows-1251"))))
+        val legacy=File(dir,"old.txt").apply { writeBytes("Счёт за аренду склада, оплата до 5 числа".toByteArray(charset("windows-1251"))) }
+        assertEquals("Счёт за аренду склада, оплата до 5 числа",TextExtract.extract(legacy,"old.txt"))
         // A UTF-8 sequence cut at the read cap is still UTF-8.
         val cut="Документ".toByteArray().let { it.copyOf(it.size-1) }
         assertTrue(TextExtract.decode(cut).startsWith("Докумен"))

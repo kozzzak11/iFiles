@@ -37,6 +37,12 @@ object TextExtract {
         }
         return String(bytes,Charset.forName("windows-1251"))
     }
+    /** Binary sniffing without requiring UTF-8, so legacy single-byte encodings (Windows-1251) still count as text. */
+    fun looksText(bytes: ByteArray): Boolean {
+        if(bytes.size>=2 && ((bytes[0]==0xff.toByte() && bytes[1]==0xfe.toByte()) || (bytes[0]==0xfe.toByte() && bytes[1]==0xff.toByte())))return true
+        if(bytes.any { it==0.toByte() })return false
+        return bytes.count { (it.toInt() and 255)<32 && it!=9.toByte() && it!=10.toByte() && it!=13.toByte() }*20<=bytes.size
+    }
     fun stripMarkup(text: String)=text.replace(Regex("(?s)<(script|style)[^>]*>.*?</\\1>")," ").replace(Regex("<[^>]{0,2000}>")," ")
         .replace("&nbsp;"," ").replace("&lt;","<").replace("&gt;",">").replace("&quot;","\"").replace("&#39;","'").replace("&amp;","&")
     private fun clean(text: String)=text.replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]")," ").take(TEXT_CAP)
@@ -50,7 +56,7 @@ object TextExtract {
             x=="pdf" -> pdf?.invoke(file) ?: return null
             x in plain || mime.startsWith("text/") || x.isEmpty() -> {
                 val bytes=file.inputStream().use { PreviewFiles.read(it,READ_CAP) }
-                if(!PreviewFiles.isText(bytes.copyOf(minOf(bytes.size,4096))))return null
+                if(!looksText(bytes.copyOf(minOf(bytes.size,4096))))return null
                 decode(bytes).let { if(x in setOf("html","htm","xml","rtf"))stripMarkup(it) else it }
             }
             else -> return null
