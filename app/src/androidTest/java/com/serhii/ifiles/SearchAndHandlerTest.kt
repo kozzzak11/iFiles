@@ -37,6 +37,16 @@ class SearchAndHandlerTest {
     }
     private fun find(text: String, timeout: Long=15000)=await(By.text(text),"\"$text\"",timeout)
     private fun desc(d: String, timeout: Long=15000)=await(By.desc(d),"desc \"$d\"",timeout)
+    private fun quickShot(name: String){device.takeScreenshot(File(shots,"$name.png"));shell("mkdir -p /data/local/tmp/ifiles-screens");shell("screencap -p /data/local/tmp/ifiles-screens/$name.png")}
+    private fun waitIndexed() {
+        val end=System.currentTimeMillis()+240_000
+        while(System.currentTimeMillis()<end) {
+            val jobs=WorkManager.getInstance(context).getWorkInfosForUniqueWork(Indexing.QUEUE).get()
+            if(jobs.isNotEmpty() && jobs.all { it.state.isFinished }) return
+            Thread.sleep(500)
+        }
+        throw AssertionError("Indexing did not finish")
+    }
     private lateinit var s: Storage
     private lateinit var dir: File
 
@@ -74,24 +84,27 @@ class SearchAndHandlerTest {
         File(dir,"Заметки/old-1251.txt").writeBytes("Счёт за аренду склада, оплата до 5 числа".toByteArray(charset("windows-1251")))
         File(dir,"Отчёт.txt").writeText("Ничего общего")
         // Enough files that the progress row and the notification are visible for a while.
-        for(f in 0 until 40) { val sub=File(dir,"Архив/папка-$f").apply { mkdirs() }; for(i in 0 until 100) File(sub,"запись-$i.txt").writeText("Запись $f/$i: инвентаризация, накладная, приход и расход.\n".repeat(30)) }
+        for(f in 0 until 60) { val sub=File(dir,"Архив/папка-$f").apply { mkdirs() }; for(i in 0 until 100) File(sub,"запись-$i.txt").writeText("Запись $f/$i: инвентаризация, накладная, приход и расход.\n".repeat(30)) }
         ActivityScenario.launch<MainActivity>(Intent(context,MainActivity::class.java)).use {
             desc("Поиск")
             Indexing.enqueue(context,listOf(s.local))
             desc("Индексация",30000)
             shot("search-02-index-progress")
-            device.openNotification()
+            waitIndexed()
+            // Second full pass (index cleared) with the notification shade open.
+            ContentIndex.get(context).forget(s.local)
+            device.openNotification(); device.wait(Until.hasObject(By.res("com.android.systemui","notification_stack_scroller")),3000)
+            Indexing.enqueue(context,listOf(s.local))
             find("Индексация для поиска",20000)
-            shot("search-03-index-notification")
+            quickShot("search-03-index-notification")
             device.pressBack(); device.wait(Until.gone(By.text("Индексация для поиска")),3000)
-            // Wait for the pass to finish.
-            val end=System.currentTimeMillis()+240_000
-            while(System.currentTimeMillis()<end) {
-                val jobs=WorkManager.getInstance(context).getWorkInfosForUniqueWork(Indexing.QUEUE).get()
-                if(jobs.isNotEmpty() && jobs.all { it.state.isFinished }) break
-                Thread.sleep(500)
-            }
-            assertEquals(4004L,ContentIndex.get(context).count(s.local))
+            waitIndexed()
+            val index=ContentIndex.get(context)
+            assertEquals(6004L,index.count(s.local))
+            val pdfText=PdfText.extract(context,File(dir,"scan-0042.pdf"))
+            assertTrue("PDF text: $pdfText",pdfText.contains("warehouse"))
+            val hits=index.search("аренды склада")
+            assertEquals("hits: $hits",setOf("scan-0042.pdf","notes.txt"),hits.map { it.name }.toSet())
             desc("Поиск").click(); desc("Поиск").text="аренды склада"
             desc("Результат: scan-0042.pdf",20000)
             desc("Результат: notes.txt")

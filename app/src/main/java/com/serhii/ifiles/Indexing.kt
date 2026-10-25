@@ -75,7 +75,7 @@ class IndexWorker(context: Context, params: WorkerParameters): CoroutineWorker(c
         var indexed=0; var seen=0; var removed=0; var failed=0; var unavailable=0
         for((i,root) in roots.withIndex()) {
             if(isStopped)break
-            val label=runCatching { s.stat(root).name }.getOrDefault("Папка")
+            val label=if(root==s.local)"iFiles" else runCatching { s.stat(root).name }.getOrDefault("Папка")
             try {
                 val stats=Indexer(s,index).run(root,check={ if(isStopped)throw kotlinx.coroutines.CancellationException("Индексация отменена") }) { st,name ->
                     val now=System.currentTimeMillis()
