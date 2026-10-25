@@ -118,7 +118,7 @@ object Thumbnails {
         "word" -> WordPreview(e,s)
         "text" -> TextPreview(e,s)
         "document","archive" -> DocumentPreview(e,s,PreviewFiles.kind(e,byteArrayOf()))
-        else -> Text("Для этого формата нет встроенного просмотра. Выберите «Открыть в другом приложении» в меню ⋮.",Modifier.padding(24.dp))
+        else -> FileInfoPreview(e,s)
     }
 }
 @Composable private fun WordPreview(e:Entry,s:Storage) {
@@ -203,4 +203,31 @@ object Thumbnails {
         }} catch(ex: CancellationException){throw ex} catch(ex: Exception){error=ex.message ?: "Не удалось прочитать документ"}
     }
     PreviewText(text,error)
+}
+
+/** In-app screen for formats without a viewer: what the file is, plus a peek at its first bytes. */
+@Composable fun FileInfoPreview(e: Entry,s: Storage) {
+    var peek by remember(e.ref){mutableStateOf<Pair<Boolean,String>?>(null)};var error by remember(e.ref){mutableStateOf<String?>(null)}
+    LaunchedEffect(e.ref) {
+        try { peek=withContext(Dispatchers.IO){ s.input(e.ref).use { PreviewFiles.peek(PreviewFiles.read(it,4096)) } } }
+        catch(ex: CancellationException){throw ex} catch(ex: Exception){error=ex.message ?: "Не удалось прочитать файл"}
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+        FileGlyph(e,s,Modifier.size(88.dp))
+        Text(e.name,Modifier.padding(top=12.dp),style=MaterialTheme.typography.titleMedium,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
+        val ext=e.name.substringAfterLast('.',"").uppercase()
+        Text(listOf(if(ext.isNotEmpty())"Файл $ext" else "Файл",humanSize(e.size),dateText(e.modified)).filter{it.isNotEmpty()}.joinToString(" · "),style=MaterialTheme.typography.bodySmall)
+        Text("Тип: ${e.mime}",style=MaterialTheme.typography.bodySmall)
+        Text("Встроенного просмотра для этого формата нет. Ниже — начало файла.",Modifier.padding(vertical=12.dp),style=MaterialTheme.typography.bodySmall,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
+        when {
+            error!=null -> Text(error!!)
+            peek==null -> CircularProgressIndicator()
+            else -> Surface(shape=androidx.compose.foundation.shape.RoundedCornerShape(10.dp),tonalElevation=2.dp,modifier=Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(if(peek!!.first)"Текст (первые 4 КБ)" else "HEX (первые 4 КБ)",style=MaterialTheme.typography.labelMedium)
+                    SelectionContainer{Text(peek!!.second,Modifier.horizontalScroll(rememberScrollState()).padding(top=6.dp),fontFamily=androidx.compose.ui.text.font.FontFamily.Monospace,style=MaterialTheme.typography.bodySmall)}
+                }
+            }
+        }
+    }
 }

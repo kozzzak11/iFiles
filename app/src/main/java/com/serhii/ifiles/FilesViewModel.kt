@@ -85,7 +85,16 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
     fun sort(value: String) {change { it.copy(sort=value) };storage.prefs.edit().putString("sort",value).apply();refresh()}
     fun theme(value: String) {change{it.copy(theme=value)};storage.prefs.edit().putString("theme",value).apply()}
     fun select(ref: String) { change { it.copy(selecting=true,selected=if(ref in it.selected)it.selected-ref else it.selected+ref) } }
-    fun pin(ref: String) {storage.pin(ref);refresh()}
+    fun pin(ref: String) {runCatching{storage.pin(ref)}.onFailure(::error);refresh()}
+    fun clearRecents() {storage.clearRecents();refresh()}
+    /** True only when the file is really gone (not merely on an unplugged USB drive / revoked folder). */
+    private fun missing(ref: String): Boolean = runCatching {
+        if(storage.isFile(ref)) {
+            val f=storage.file(ref)
+            val volume=generateSequence(f.parentFile){it.parentFile}.firstOrNull { it.parentFile?.path=="/storage" }
+            !f.exists() && (volume==null || volume.exists())
+        } else storage.resolver.query(storage.uri(ref),arrayOf(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID),null,null,null).use { it!=null && !it.moveToFirst() }
+    }.getOrElse { it is java.io.FileNotFoundException }
     fun refresh(debounce: Boolean=false) {
         loadJob?.cancel()
         loadJob=viewModelScope.launch {
@@ -96,7 +105,12 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
                 val result=withContext(Dispatchers.IO) {
                     val base=when {
                         a.current!=null -> storage.list(a.current!!.ref)
-                        a.tab=="Недавние" -> storage.recents().mapNotNull { runCatching { storage.stat(it) }.getOrNull() }
+                        a.tab=="Недавние" -> {
+                            val found=HashMap<String,Entry>()
+                            // Files that were deleted or moved drop out of Recent (unmounted USB/SAF refs are kept).
+                            storage.pruneRecents { ref -> runCatching { storage.stat(ref) }.onSuccess { found[ref]=it }.isSuccess || !missing(ref) }
+                                .mapNotNull { found[it] }
+                        }
                         a.tab=="Избранное" -> storage.strings("favorites").mapNotNull { runCatching { storage.stat(it) }.getOrNull() }
                         else -> emptyList()
                     }

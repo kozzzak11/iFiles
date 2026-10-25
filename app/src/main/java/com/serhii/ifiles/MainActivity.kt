@@ -24,6 +24,10 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.ui.draw.blur
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -140,6 +144,8 @@ private val Blue=Color(0xFF007AFF)
     fun parent(e: Entry): String? = s.parentOf(e.ref)
     fun saveParent(e: Entry) {s.rememberParent(e.ref)}
     fun clipboard(refs: List<String>,move: Boolean) {clip=refs;cut=move;s.prefs.edit().putString("clipboard",JSONArray(refs).toString()).putBoolean("cut",move).apply();vm.change{it.copy(selected=emptySet(),selecting=false)};vm.notice("Откройте папку назначения и нажмите «Вставить»")}
+    // Swipe-to-delete: no dialog (like iOS); the item goes to the recoverable trash.
+    fun trashNow(refs: List<String>) {refs.groupBy{s.parentOf(it) ?: s.local}.forEach{(p,group)->vm.operation("trash",group,sourceParent=p)};vm.notice("Перемещено в «Недавно удалённые»")}
     fun external(e: Entry,share: Boolean) {scope.launch {
         runCatching {
             val u=withContext(Dispatchers.IO){s.externalUri(e.ref){ensureActive()}}
@@ -166,17 +172,17 @@ private val Blue=Color(0xFF007AFF)
         }
     }
     LaunchedEffect(a.notice) {a.notice?.let{snack.showSnackbar(it);vm.notice(null)}}
-    BackHandler(a.stack.isNotEmpty() || a.selecting || a.tab !in listOf("Обзор","Недавние") || a.query.isNotEmpty()) {
+    BackHandler(a.stack.isNotEmpty() || a.selecting || a.tab !in listOf("Обзор","Недавние","Избранное") || a.query.isNotEmpty()) {
         if(a.stack.isEmpty() && !a.selecting && a.query.isEmpty())vm.tab("Обзор") else vm.back()
     }
     MaterialTheme(colorScheme=colors) {
-        Scaffold(containerColor=colors.background,snackbarHost={SnackbarHost(snack)},bottomBar={
+        Scaffold(modifier=Modifier.blur(if(contextEntry!=null)14.dp else 0.dp),containerColor=colors.background,snackbarHost={SnackbarHost(snack)},bottomBar={
             Surface(tonalElevation=0.dp,shadowElevation=0.5.dp) {
                 Row(Modifier.fillMaxWidth().navigationBarsPadding().height(60.dp),horizontalArrangement=Arrangement.SpaceEvenly) {
-                    listOf("Недавние" to Icons.Outlined.Schedule,"Обзор" to Icons.Outlined.Folder).forEach { (tab,icon) ->
-                        val active=if(tab=="Обзор")a.tab!="Недавние" else a.tab==tab
+                    listOf("Недавние" to Icons.Outlined.Schedule,"Избранное" to Icons.Outlined.StarOutline,"Обзор" to Icons.Outlined.Folder).forEach { (tab,icon) ->
+                        val active=if(tab=="Обзор")a.tab !in listOf("Недавние","Избранное") else a.tab==tab
                         Column(Modifier.weight(1f).fillMaxHeight().clickable { vm.tab(tab) },horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center) {
-                            Icon(icon,tab,tint=if(active)colors.primary else colors.onSurfaceVariant);Text(tab,fontSize=10.sp,color=if(active)colors.primary else colors.onSurfaceVariant)
+                            Icon(if(active && tab=="Избранное")Icons.Outlined.Star else icon,tab,tint=if(active)colors.primary else colors.onSurfaceVariant);Text(tab,fontSize=10.sp,color=if(active)colors.primary else colors.onSurfaceVariant)
                         }
                     }
                 }
@@ -184,8 +190,8 @@ private val Blue=Color(0xFF007AFF)
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
                 Row(Modifier.fillMaxWidth().height(50.dp).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically) {
-                    if(a.stack.isNotEmpty() || a.tab !in listOf("Обзор","Недавние"))TextButton(onClick={if(a.stack.isEmpty())vm.tab("Обзор") else vm.back()},contentPadding=PaddingValues(0.dp)) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBackIos,null,Modifier.size(18.dp));Text(a.stack.dropLast(1).lastOrNull()?.name ?: "Обзор",maxLines=1,modifier=Modifier.widthIn(max=150.dp),overflow=TextOverflow.Ellipsis)
+                    if(a.stack.isNotEmpty() || a.tab !in listOf("Обзор","Недавние","Избранное"))TextButton(onClick={if(a.stack.isEmpty())vm.tab("Обзор") else vm.back()},contentPadding=PaddingValues(0.dp)) {
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBackIos,null,Modifier.size(18.dp));Text(a.stack.dropLast(1).lastOrNull()?.name ?: if(a.tab in listOf("Обзор","Недавние","Избранное"))a.tab else "Обзор",maxLines=1,modifier=Modifier.widthIn(max=150.dp),overflow=TextOverflow.Ellipsis)
                     }
                     Spacer(Modifier.weight(1f))
                     if(a.selecting)TextButton(onClick={vm.change{it.copy(selecting=false,selected=emptySet())}}){Text("Готово")}
@@ -193,7 +199,8 @@ private val Blue=Color(0xFF007AFF)
                         IconButton(onClick={toolbar=true}){Icon(Icons.Outlined.MoreHoriz,"Действия",tint=colors.primary)}
                         DropdownMenu(toolbar,{toolbar=false}) {
                             if(a.current!=null)DropdownMenuItem(text={Text("Новая папка")},onClick={toolbar=false;nameValue="Новая папка";nameDialog="mkdir"},leadingIcon={Icon(Icons.Outlined.CreateNewFolder,null)})
-                            if(a.entries.isNotEmpty())DropdownMenuItem(text={Text("Выбрать")},onClick={toolbar=false;vm.change{it.copy(selecting=true)}})
+                            if(a.entries.isNotEmpty())DropdownMenuItem(text={Text("Выбрать")},onClick={toolbar=false;vm.change{it.copy(selecting=true)}},leadingIcon={Icon(Icons.Outlined.CheckCircle,null)})
+                            if(a.tab=="Недавние" && a.current==null)DropdownMenuItem(text={Text("Очистить недавние")},onClick={toolbar=false;vm.clearRecents()},leadingIcon={Icon(Icons.Outlined.DeleteSweep,null)})
                             DropdownMenuItem(text={Text(if(a.grid)"Список" else "Значки")},onClick={toolbar=false;vm.grid()})
                             HorizontalDivider()
                             (if(a.tab=="Недавние" && a.current==null)listOf("Открытые","Имя","Размер","Дата","Тип") else listOf("Имя","Размер","Дата","Тип")).forEach{item->DropdownMenuItem(text={Text("${if(a.sort==item)"✓ " else ""}$item")},onClick={toolbar=false;vm.sort(item)})}
@@ -208,9 +215,9 @@ private val Blue=Color(0xFF007AFF)
                         }
                     }
                 }
-                Text(if(a.selecting)"Выбрано: ${a.selected.size}" else a.current?.name ?: a.tab,Modifier.padding(horizontal=20.dp,vertical=2.dp),fontSize=34.sp,fontWeight=FontWeight.Bold,maxLines=2,overflow=TextOverflow.Ellipsis)
+                Text(if(a.selecting)"Выбрано: ${a.selected.size}" else a.current?.name ?: a.tab,Modifier.padding(horizontal=16.dp,vertical=2.dp),fontSize=34.sp,fontWeight=FontWeight.Bold,letterSpacing=0.37.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
                 if(a.tab!="Недавно удалённые" && (a.current!=null || a.tab!="Обзор")) {
-                    OutlinedTextField(a.query,{vm.query(it)},Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=10.dp),placeholder={Text(if(a.current!=null)"Поиск в папке и подпапках" else "Поиск")},leadingIcon={Icon(Icons.Outlined.Search,null)},trailingIcon={if(a.query.isNotEmpty())IconButton(onClick={vm.query("")}){Icon(Icons.Outlined.Cancel,"Очистить поиск")}},singleLine=true,shape=RoundedCornerShape(12.dp),colors=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=Color.Transparent,focusedBorderColor=colors.primary,unfocusedContainerColor=colors.surfaceContainer,focusedContainerColor=colors.surface))
+                    IosSearchField(a.query,{vm.query(it)},if(a.current!=null)"Поиск в папке и подпапках" else "Поиск",dark,Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp))
                 }
                 a.warning?.let {Text(it,Modifier.padding(horizontal=20.dp,vertical=4.dp),fontSize=12.sp,color=colors.error)}
                 val jobs=a.jobs.filter{!it.state.isFinished}
@@ -252,7 +259,8 @@ private val Blue=Color(0xFF007AFF)
                             if(folder.error!=null)Column(Modifier.align(Alignment.Center).padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Outlined.Lock,null,Modifier.size(40.dp));Text(folder.error!!,textAlign=TextAlign.Center);TextButton(onClick={treePicker.launch(null)}){Text("Выбрать папку")};TextButton(onClick={vm.refresh()}){Text("Повторить")}}
                             else if(folder.entries.isEmpty() && !folder.loading)Column(Modifier.align(Alignment.Center),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Outlined.FolderOpen,null,Modifier.size(64.dp),tint=colors.onSurfaceVariant);Text(if(folder.query.isNotBlank())"Ничего не найдено" else "Здесь пока пусто",color=colors.onSurfaceVariant)}
                             else if(folder.entries.isNotEmpty()) {
-                                val tap:(Entry)->Unit={e->saveParent(e);if(folder.selecting)vm.select(e.ref) else if(e.directory)vm.open(e) else {s.recent(e.ref);preview=e}}
+                                // Preview records the file in Recent itself (MediaActivity), for every way a file is opened.
+                                val tap:(Entry)->Unit={e->saveParent(e);if(folder.selecting)vm.select(e.ref) else if(e.directory)vm.open(e) else preview=e}
                                 val long:(Entry)->Unit={saveParent(it);contextEntry=it}
                                 // Remember the scroll position per folder so going back returns to the same spot.
                                 val scrollKey=(folder.current?.ref ?: folder.tab)+if(folder.grid)"#grid" else "#list"
@@ -265,8 +273,16 @@ private val Blue=Color(0xFF007AFF)
                                 }}
                                 if(folder.grid)LazyVerticalGrid(GridCells.Adaptive(105.dp),state=gridState,contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
                                     items(folder.entries,key={it.ref}){e->FileCell(e,s,true,e.ref in folder.selected,folder.selecting,e.ref in folder.favorites,{tap(e)},{long(e)})}
-                                } else LazyColumn(state=listState,contentPadding=PaddingValues(horizontal=20.dp,vertical=8.dp)) {
-                                    items(folder.entries,key={it.ref}){e->FileCell(e,s,false,e.ref in folder.selected,folder.selecting,e.ref in folder.favorites,{tap(e)},{long(e)});HorizontalDivider(color=colors.outlineVariant.copy(alpha=.4f))}
+                                } else LazyColumn(state=listState,contentPadding=PaddingValues(vertical=4.dp)) {
+                                    itemsIndexed(folder.entries,key={_,e->e.ref}){i,e->
+                                        val favorite=e.ref in folder.favorites
+                                        SwipeRow(enabled=!folder.selecting,
+                                            leading=listOf(SwipeAction(if(favorite)"Убрать" else "Избранное",if(favorite)Icons.Outlined.StarOutline else Icons.Outlined.Star,Ios.Orange){vm.pin(e.ref)}),
+                                            trailing=listOf(SwipeAction("Переместить",Icons.AutoMirrored.Outlined.DriveFileMove,Ios.Indigo){saveParent(e);clipboard(listOf(e.ref),true)},
+                                                SwipeAction("Удалить",Icons.Outlined.Delete,Ios.Red){saveParent(e);trashNow(listOf(e.ref))})) {
+                                            IosFileRow(e,s,dark,e.ref in folder.selected,folder.selecting,favorite,i<folder.entries.lastIndex,{tap(e)},{long(e)})
+                                        }
+                                    }
                                 }
                             }
                             if(folder.loading)LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
@@ -277,24 +293,29 @@ private val Blue=Color(0xFF007AFF)
             }
         }
         preview?.let{e->Preview(e,s,{preview=null},{external(it,false)},{external(it,true)},if(a.current!=null)a.entries else emptyList())}
-        contextEntry?.let { e ->ModalBottomSheet(onDismissRequest={contextEntry=null}) {
-            Row(Modifier.padding(20.dp),verticalAlignment=Alignment.CenterVertically){FileGlyph(e,s,Modifier.size(40.dp));Text(e.name,Modifier.padding(start=12.dp),fontWeight=FontWeight.SemiBold,maxLines=2)}
-            val actions=mutableListOf<Pair<String,()->Unit>>()
-            actions+=(if(e.ref in a.favorites)"Убрать из избранного" else "В избранное") to {vm.pin(e.ref)}
-            actions+="Выбрать" to {vm.select(e.ref)}
-            actions+="Копировать" to {clipboard(listOf(e.ref),false)}
-            actions+="Переместить" to {clipboard(listOf(e.ref),true)}
-            if(parent(e)!=null)actions+="Переименовать" to {renameRef=e;nameValue=e.name;nameDialog="rename"}
-            if(!e.directory) {actions+="Быстрый просмотр" to {s.recent(e.ref);preview=e};actions+="Поделиться" to {external(e,true)};actions+="Открыть в приложении" to {external(e,false)}}
-            if(a.current!=null) {
-                actions+="Сжать в ZIP" to {vm.change{it.copy(selected=setOf(e.ref))};nameValue="${e.name.substringBeforeLast('.')}.zip";nameDialog="zip"}
-                if(e.name.endsWith(".zip",true) && !e.directory)actions+="Распаковать" to {vm.operation("unzip",listOf(e.ref))}
+        contextEntry?.let { e ->
+            val favorite=e.ref in a.favorites
+            val open=listOf(MenuAction(if(e.directory)"Открыть" else "Просмотр",if(e.directory)Icons.Outlined.FolderOpen else Icons.Outlined.Visibility){if(e.directory)vm.open(e) else preview=e})
+            val main=buildList {
+                if(!e.directory)add(MenuAction("Поделиться",Icons.Outlined.Share){external(e,true)})
+                add(MenuAction("Копировать",Icons.Outlined.ContentCopy){clipboard(listOf(e.ref),false)})
+                add(MenuAction("Переместить",Icons.AutoMirrored.Outlined.DriveFileMove){clipboard(listOf(e.ref),true)})
+                if(parent(e)!=null)add(MenuAction("Переименовать",Icons.Outlined.Edit){renameRef=e;nameValue=e.name;nameDialog="rename"})
+                add(MenuAction(if(favorite)"Убрать из избранного" else "В избранное",if(favorite)Icons.Outlined.StarOutline else Icons.Outlined.Star){vm.pin(e.ref)})
+                add(MenuAction("Свойства",Icons.Outlined.Info){info=e})
             }
-            actions+="Свойства" to {info=e}
-            actions+="В корзину" to {confirmTrash=listOf(e.ref)}
-            LazyColumn(Modifier.heightIn(max=500.dp)) {items(actions){action->TextButton(onClick={contextEntry=null;action.second()},modifier=Modifier.fillMaxWidth().padding(horizontal=12.dp),contentPadding=PaddingValues(12.dp)){Text(action.first,Modifier.fillMaxWidth(),color=if(action.first=="В корзину")colors.error else colors.primary)}}}
-            Spacer(Modifier.height(16.dp))
-        }}
+            val more=buildList {
+                add(MenuAction("Выбрать",Icons.Outlined.CheckCircle){vm.select(e.ref)})
+                if(a.current!=null) {
+                    add(MenuAction("Сжать в ZIP",Icons.Outlined.FolderZip){vm.change{it.copy(selected=setOf(e.ref))};nameValue="${e.name.substringBeforeLast('.')}.zip";nameDialog="zip"})
+                    if(e.name.endsWith(".zip",true) && !e.directory)add(MenuAction("Распаковать",Icons.Outlined.Unarchive){vm.operation("unzip",listOf(e.ref))})
+                }
+                // Explicit hand-off only; tapping a file always opens the in-app preview.
+                if(!e.directory)add(MenuAction("Открыть в другом приложении",Icons.AutoMirrored.Outlined.OpenInNew){external(e,false)})
+            }
+            val danger=listOf(MenuAction("В корзину",Icons.Outlined.Delete,destructive=true){confirmTrash=listOf(e.ref)})
+            IosContextMenu(e,s,dark,listOf(open,main,more,danger)){contextEntry=null}
+        }
         nameDialog?.let { kind ->
             AlertDialog(onDismissRequest={nameDialog=null},title={Text(when(kind){"mkdir"->"Новая папка";"rename"->"Переименовать";else->"Создать ZIP"})},text={OutlinedTextField(nameValue,{nameValue=it},singleLine=true,label={Text("Имя")})},confirmButton={TextButton(onClick={
                 runCatching{Names.check(nameValue)}.onSuccess {

@@ -42,7 +42,7 @@ class PlaybackService:MediaSessionService() {
                             val metadata=item.mediaMetadata
                             val extras=metadata.extras
                             val entry=Entry(ref,metadata.title?.toString() ?: "Медиафайл",false,extras?.getLong("size",-1) ?: -1,mime=extras?.getString("mime") ?: "application/octet-stream")
-                            val persistent=storage.resolver.persistedUriPermissions.any {it.isReadPermission && ref.startsWith(it.uri.toString())}
+                            val persistent=storage.hasPersistedRead(ref)
                             val copy=PreviewFiles.mediaCopy(storage,entry,!persistent && !storage.isFile(ref)) {
                                 if(destroyed || result.isCancelled || Thread.currentThread().isInterrupted)throw InterruptedIOException("Подготовка отменена")
                             }

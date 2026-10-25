@@ -149,6 +149,12 @@ object PreviewFiles {
         val f=File.createTempFile("media-",".tmp",s.context.cacheDir)
         return copy(s.input(e.ref),f,e.size,checkpoint)
     }
+    /** First bytes of an unknown file: as text when they decode as text, else as a hex dump. */
+    fun peek(bytes: ByteArray): Pair<Boolean,String> {
+        // The 4 KB cut can split a multi-byte UTF-8 letter (e.g. Cyrillic): allow up to 3 dangling bytes.
+        val cut=(0..minOf(3,bytes.size)).firstOrNull { bytes.size-it>0 && isText(bytes.copyOf(bytes.size-it)) }
+        return if(cut!=null) true to text(bytes.copyOf(bytes.size-cut)) else false to hex(bytes)
+    }
     fun hex(bytes: ByteArray)=bytes.toList().chunked(16).mapIndexed { row, data ->
         "%08X  ".format(row*16)+data.joinToString(" "){"%02X".format(it.toInt() and 255)}
     }.joinToString("\n")

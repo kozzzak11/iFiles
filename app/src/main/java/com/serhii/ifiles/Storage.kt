@@ -23,8 +23,29 @@ data class Entry(val ref: String, val name: String, val directory: Boolean, val 
                  val volumeId: String? = null, val requiresGrant: Boolean = false)
 
 object Names {
+    /** Most Android file systems (ext4/f2fs, FUSE /sdcard) limit a name to 255 bytes of UTF-8; Cyrillic takes 2 bytes per letter. */
+    const val MAX_BYTES=255
+    fun bytes(value: String)=value.toByteArray(Charsets.UTF_8).size
+    /** Shortens [value] (keeping the extension) so it fits [limit] UTF-8 bytes without splitting a character. */
+    fun fit(value: String, limit: Int = MAX_BYTES): String {
+        if(bytes(value)<=limit)return value
+        val dot=value.lastIndexOf('.').takeIf { it>0 && value.length-it<=16 } ?: value.length
+        return shorten(value.substring(0,dot),value.substring(dot),limit)
+    }
+    /** base + tail, cutting base (never [tail]) and marking the cut with "…" when over [limit] bytes. */
+    fun shorten(base: String, tail: String, limit: Int = MAX_BYTES): String {
+        if(bytes(base+tail)<=limit)return base+tail
+        val budget=limit-bytes(tail)-bytes("…") // the ellipsis itself takes 3 UTF-8 bytes
+        var b=base
+        while(b.isNotEmpty() && bytes(b)>budget) {
+            b=b.dropLast(1)
+            if(b.isNotEmpty() && Character.isHighSurrogate(b.last()))b=b.dropLast(1)
+        }
+        return b.trimEnd()+"…"+tail
+    }
     fun check(value: String): String {
-        require(value.isNotBlank() && value != "." && value != ".." && value.length <= 240 &&
+        // exFAT/FAT USB drives allow 255 UTF-16 characters, so accept them; [fit] adapts names for stricter targets.
+        require(value.isNotBlank() && value != "." && value != ".." && value.length <= 255 &&
             value.none { it == '/' || it == '\\' || it == '\u0000' || it.code < 32 }) { "Недопустимое имя" }
         return value
     }
@@ -37,7 +58,7 @@ object Names {
         if (!occupied(name)) return name
         val dot = name.lastIndexOf('.').takeIf { it > 0 } ?: name.length
         val base = name.substring(0, dot); val ext = name.substring(dot)
-        return (1..10000).asSequence().map { "$base ($it)$ext" }.firstOrNull { !occupied(it) }
+        return (1..10000).asSequence().map { shorten(base," ($it)$ext") }.firstOrNull { !occupied(it) }
             ?: error("Слишком много одинаковых имён")
     }
 }
@@ -47,6 +68,21 @@ class Storage(val context: Context) {
         private val parents=android.util.LruCache<String,String>(50000)
         const val PARENT_LIMIT=1000
         @Volatile private var parentsMigrated=false
+        /**
+         * Does a persisted grant on [grant] cover document [u]? Compares the decoded tree id instead of
+         * string prefixes: "tree/primary%3AMusic" must not match "tree/primary%3AMusic%20Old/...".
+         */
+        fun covers(grant: Uri, u: Uri): Boolean {
+            if(grant==u)return true
+            if(grant.authority!=u.authority)return false
+            val g=treeId(grant) ?: return false
+            val t=treeId(u) ?: return false
+            return g==t
+        }
+        /** Tree id from ".../tree/<id>[/document/<id>]" URIs, decoded (handles spaces, Cyrillic, %2F). */
+        fun treeId(u: Uri): String? = u.pathSegments.let { p -> if(p.size>=2 && p[0]=="tree")p[1] else null }
+        /** Canonical iFiles ref for a file path (java.net.URI form, the one used everywhere in the app). */
+        fun fileRef(path: String): String = File(path).toURI().toString()
     }
     val resolver = context.contentResolver
     val prefs = context.getSharedPreferences("ifiles", Context.MODE_PRIVATE)
@@ -162,7 +198,7 @@ class Storage(val context: Context) {
         if(!checked)require(list(parent).none { it.name.equals(name,true) }) { "Файл с таким именем уже существует" }
         if(isFile(parent)) {
             val p=file(parent).canonicalFile
-            val f=File(p,name)
+            val f=File(p,Names.fit(name))
             require(f.canonicalFile.parentFile == p) { "Недопустимый путь" }
             check(if(directory) f.mkdir() else f.createNewFile()) { "Не удалось создать $name" }
             return f.toURI().toString()
@@ -174,7 +210,8 @@ class Storage(val context: Context) {
     }
     fun unique(parent: String, name: String): String {
         val names = list(parent).map { it.name.lowercase() }.toHashSet()
-        return Names.unique(name) { it.lowercase() in names }
+        val target = if(isFile(parent)) Names.fit(name) else name
+        return Names.unique(target) { it.lowercase() in names }
     }
     fun rename(ref: String, name: String, parent: String): String {
         Names.check(name)
@@ -216,7 +253,7 @@ class Storage(val context: Context) {
             val entry=stat(ref)
             val folder=File(context.cacheDir,"shared/${UUID.randomUUID()}").apply { mkdirs() }
             try {
-                val copy=File(folder,Names.check(entry.name))
+                val copy=File(folder,Names.fit(Names.check(entry.name)))
                 PreviewFiles.copy(input(ref),copy,entry.size,checkpoint)
                 FileProvider.getUriForFile(context,"${context.packageName}.files",copy)
             } catch(e: Exception) { folder.deleteRecursively();throw e }
@@ -225,7 +262,17 @@ class Storage(val context: Context) {
     fun scan(ref: String) {
         if(isFile(ref)) android.media.MediaScannerConnection.scanFile(context,arrayOf(file(ref).absolutePath),null,null)
     }
-    fun pin(ref: String) = toggle("favorites",ref)
+    fun pin(ref: String) {
+        val set=strings("favorites").toMutableSet()
+        if(!set.remove(ref)) { require(set.size<Library.FAVORITES_LIMIT) { "В избранном уже ${Library.FAVORITES_LIMIT} элементов" }; set+=ref }
+        prefs.edit().putStringSet("favorites",set).apply()
+    }
+    fun isFavorite(ref: String) = ref in strings("favorites")
+    fun unpinMissing(exists: (String)->Boolean): Int {
+        val set=strings("favorites"); val kept=set.filter(exists).toSet()
+        if(kept.size!=set.size)prefs.edit().putStringSet("favorites",kept).apply()
+        return set.size-kept.size
+    }
     fun strings(key: String): Set<String> = prefs.getStringSet(key,emptySet())!!.toSet()
     fun toggle(key: String, ref: String) { val set=strings(key).toMutableSet(); if(!set.add(ref))set.remove(ref); prefs.edit().putStringSet(key,set).apply() }
     fun addTree(u: Uri) {
@@ -234,10 +281,21 @@ class Storage(val context: Context) {
         prefs.edit().putStringSet("roots",strings("roots")+u.toString()).apply()
     }
     fun recent(ref: String) {
-        val a=JSONArray(prefs.getString("recent","[]")); val refs=(listOf(ref)+(0 until a.length()).map{a.getString(it)}).distinct().take(200)
-        prefs.edit().putString("recent",JSONArray(refs).toString()).apply()
+        prefs.edit().putString("recent",JSONArray(Library.push(recents(),ref)).toString()).apply()
     }
-    fun recents(): List<String> = JSONArray(prefs.getString("recent","[]")).let { a -> (0 until a.length()).map { a.getString(it) } }
+    fun recents(): List<String> = runCatching { JSONArray(prefs.getString("recent","[]")).let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrDefault(emptyList())
+    fun clearRecents() { prefs.edit().putString("recent","[]").apply() }
+    /** Drops recents whose files are gone; returns the remaining refs, newest first. */
+    fun pruneRecents(exists: (String)->Boolean): List<String> {
+        val all=recents(); val kept=Library.prune(all,exists)
+        if(kept!=all)prefs.edit().putString("recent",JSONArray(kept).toString()).apply()
+        return kept
+    }
+    /** Is the ref covered by a persisted SAF read grant (exact tree, not a string prefix)? */
+    fun hasPersistedRead(ref: String): Boolean {
+        val u=uri(ref)
+        return u.scheme=="content" && resolver.persistedUriPermissions.any { it.isReadPermission && covers(it.uri,u) }
+    }
     fun rewriteRef(old: String, new: String) {
         for(key in listOf("favorites","roots")) if(old in strings(key)) prefs.edit().putStringSet(key,strings(key)-old+new).apply()
         val refs=recents().map { if(it==old)new else it }; prefs.edit().putString("recent",JSONArray(refs).toString()).apply()
@@ -247,6 +305,14 @@ class Storage(val context: Context) {
         try { out.write(data.toString().toByteArray()); a.finishWrite(out) } catch(e: Throwable) { a.failWrite(out); throw e }
     }
     fun read(file: File): JSONObject = AtomicFile(file).openRead().use { JSONObject(it.bufferedReader().readText()) }
+}
+
+/** Pure, bounded Recent/Favorites rules (unit-tested). */
+object Library {
+    const val RECENT_LIMIT=100
+    const val FAVORITES_LIMIT=500
+    fun push(list: List<String>, ref: String, limit: Int = RECENT_LIMIT) = (listOf(ref)+list).distinct().take(limit)
+    fun prune(list: List<String>, exists: (String)->Boolean) = list.filter { runCatching { exists(it) }.getOrDefault(false) }.distinct().take(RECENT_LIMIT)
 }
 
 /** Streamed, bounded-memory verified operations. Never follows local symlinks. */
@@ -384,7 +450,7 @@ class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progr
         val payload=File(dir,"payload").apply { mkdirs() }.toURI().toString()
         val rec=JSONObject().put("id",id).put("name",e.name).put("source",source).put("parent",parent).put("time",System.currentTimeMillis()).put("state","copying")
         val manifest=File(dir,"record.json"); s.atomic(manifest,rec)
-        val target=copy(source,payload,e.name)
+        val target=copy(source,payload,"item")
         check(equivalent(source,target)) { "Исходник изменился. Удаление отменено." }
         rec.put("backup",target).put("state","verified"); s.atomic(manifest,rec)
         // Manifest is committed before touching the original. An interrupted operation stays recoverable.
@@ -396,7 +462,9 @@ class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progr
         require(Regex("[a-f0-9-]{36}").matches(id))
         val dir=File(trashRoot,id); val rec=s.read(File(dir,"record.json"))
         require(rec.optString("state")!="copying") { "Незавершённая копия: исходник не удалялся" }
-        val backup=rec.getString("backup"); val target=copy(backup,parent ?: rec.getString("parent"))
+        val backup=rec.getString("backup"); val destination=parent ?: rec.getString("parent")
+        // The backup is stored as "item"; restore it under its original name.
+        val target=copy(backup,destination,s.unique(destination,rec.optString("name").ifBlank { s.stat(backup).name }))
         check(equivalent(backup,target)); rec.put("state","restored").put("restoredTo",target); s.atomic(File(dir,"record.json"),rec)
         // The restored copy is verified, so the backup is no longer needed; free the space.
         dir.deleteRecursively()
