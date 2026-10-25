@@ -30,14 +30,16 @@ class MainScreenTest {
     private fun shell(command: String){android.os.ParcelFileDescriptor.AutoCloseInputStream(ins.uiAutomation.executeShellCommand(command)).use{it.readBytes()}}
     // Saved by the shell user under /data/local/tmp as well: app files are removed when the test APK is uninstalled.
     private fun shot(name: String){device.waitForIdle();Thread.sleep(400);device.takeScreenshot(File(shots,"$name.png"));shell("mkdir -p /data/local/tmp/ifiles-screens");shell("screencap -p /data/local/tmp/ifiles-screens/$name.png")}
-    private fun find(text: String, timeout: Long=15000): UiObject2 {
-        assertTrue("Missing \"$text\"",device.wait(Until.hasObject(By.text(text)),timeout))
-        return device.findObject(By.text(text))
+    // Compose may recompose between wait() and findObject(), so poll until the node is actually returned.
+    private fun await(selector: androidx.test.uiautomator.BySelector, what: String, timeout: Long): UiObject2 {
+        val end=System.currentTimeMillis()+timeout
+        while(System.currentTimeMillis()<end){
+            device.wait(Until.findObject(selector),500)?.let{return it}
+        }
+        throw AssertionError("Missing $what")
     }
-    private fun desc(d: String, timeout: Long=10000): UiObject2 {
-        assertTrue("Missing desc \"$d\"",device.wait(Until.hasObject(By.desc(d)),timeout))
-        return device.findObject(By.desc(d))
-    }
+    private fun find(text: String, timeout: Long=15000)=await(By.text(text),"\"$text\"",timeout)
+    private fun desc(d: String, timeout: Long=10000)=await(By.desc(d),"desc \"$d\"",timeout)
     private lateinit var dir: File
     @Before fun prepare() {
         shell("input keyevent KEYCODE_WAKEUP");shell("wm dismiss-keyguard")
