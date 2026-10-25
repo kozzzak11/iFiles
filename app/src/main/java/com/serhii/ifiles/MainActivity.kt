@@ -251,12 +251,21 @@ private val Blue=Color(0xFF007AFF)
                         else -> Box(Modifier.fillMaxSize()) {
                             if(folder.error!=null)Column(Modifier.align(Alignment.Center).padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Outlined.Lock,null,Modifier.size(40.dp));Text(folder.error!!,textAlign=TextAlign.Center);TextButton(onClick={treePicker.launch(null)}){Text("Выбрать папку")};TextButton(onClick={vm.refresh()}){Text("Повторить")}}
                             else if(folder.entries.isEmpty() && !folder.loading)Column(Modifier.align(Alignment.Center),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Outlined.FolderOpen,null,Modifier.size(64.dp),tint=colors.onSurfaceVariant);Text(if(folder.query.isNotBlank())"Ничего не найдено" else "Здесь пока пусто",color=colors.onSurfaceVariant)}
-                            else {
+                            else if(folder.entries.isNotEmpty()) {
                                 val tap:(Entry)->Unit={e->saveParent(e);if(folder.selecting)vm.select(e.ref) else if(e.directory)vm.open(e) else {s.recent(e.ref);preview=e}}
                                 val long:(Entry)->Unit={saveParent(it);contextEntry=it}
-                                if(folder.grid)LazyVerticalGrid(GridCells.Adaptive(105.dp),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+                                // Remember the scroll position per folder so going back returns to the same spot.
+                                val scrollKey=(folder.current?.ref ?: folder.tab)+if(folder.grid)"#grid" else "#list"
+                                val saved=remember(scrollKey){vm.scrollOf(scrollKey)}
+                                val listState=remember(scrollKey){androidx.compose.foundation.lazy.LazyListState(saved.first,saved.second)}
+                                val gridState=remember(scrollKey){androidx.compose.foundation.lazy.grid.LazyGridState(saved.first,saved.second)}
+                                DisposableEffect(scrollKey){onDispose{
+                                    if(folder.grid)vm.saveScroll(scrollKey,gridState.firstVisibleItemIndex,gridState.firstVisibleItemScrollOffset)
+                                    else vm.saveScroll(scrollKey,listState.firstVisibleItemIndex,listState.firstVisibleItemScrollOffset)
+                                }}
+                                if(folder.grid)LazyVerticalGrid(GridCells.Adaptive(105.dp),state=gridState,contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
                                     items(folder.entries,key={it.ref}){e->FileCell(e,s,true,e.ref in folder.selected,folder.selecting,e.ref in folder.favorites,{tap(e)},{long(e)})}
-                                } else LazyColumn(contentPadding=PaddingValues(horizontal=20.dp,vertical=8.dp)) {
+                                } else LazyColumn(state=listState,contentPadding=PaddingValues(horizontal=20.dp,vertical=8.dp)) {
                                     items(folder.entries,key={it.ref}){e->FileCell(e,s,false,e.ref in folder.selected,folder.selecting,e.ref in folder.favorites,{tap(e)},{long(e)});HorizontalDivider(color=colors.outlineVariant.copy(alpha=.4f))}
                                 }
                             }
@@ -310,7 +319,7 @@ private val Blue=Color(0xFF007AFF)
             LazyColumn(Modifier.fillMaxWidth().heightIn(max=500.dp),contentPadding=PaddingValues(20.dp)) {
                 if(a.jobs.isEmpty())item{Text("Операций пока нет")}
                 items(a.jobs,key={it.id}){job->Column(Modifier.fillMaxWidth().padding(vertical=8.dp)) {
-                    val result=when(job.state){androidx.work.WorkInfo.State.SUCCEEDED->"Завершено";androidx.work.WorkInfo.State.FAILED->"Ошибка";androidx.work.WorkInfo.State.CANCELLED->"Отменено: проверьте назначение и корзину";androidx.work.WorkInfo.State.RUNNING->"Выполняется";else->"В очереди"}
+                    val result=when(job.state){androidx.work.WorkInfo.State.SUCCEEDED->if(job.outputData.getString("error")!=null)"Ошибка" else "Завершено";androidx.work.WorkInfo.State.FAILED->"Ошибка";androidx.work.WorkInfo.State.CANCELLED->"Отменено: проверьте назначение и корзину";androidx.work.WorkInfo.State.RUNNING->"Выполняется";else->"В очереди"}
                     Text(result,fontWeight=FontWeight.SemiBold)
                     Text(job.outputData.getString("error") ?: job.progress.getString("file") ?: job.id.toString(),fontSize=12.sp)
                     if(!job.state.isFinished)TextButton(onClick={vm.cancel(job.id)}){Text("Отменить")}

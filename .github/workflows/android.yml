@@ -24,18 +24,19 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: ifiles-personal-debug-key-v1
-      - name: Stable personal debug signing key
+      # The signing key lives only in the DEBUG_KEYSTORE_BASE64 repository secret.
+      # Secrets are not passed to pull requests from forks: those builds get a throwaway key and are never published.
+      - name: Signing key
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
           mkdir -p ~/.android
+          umask 077
           if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
             printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > ~/.android/debug.keystore
-          elif [ ! -f ~/.android/debug.keystore ]; then
+            echo "REAL_SIGNING_KEY=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::DEBUG_KEYSTORE_BASE64 is not available; using a throwaway key (APK will not be published)."
             keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
           fi
       - run: gradle :app:testDebugUnitTest :app:lintDebug :app:assembleRelease :app:assembleDebugAndroidTest --stacktrace
@@ -56,16 +57,21 @@ jobs:
             gradle :app:connectedDebugAndroidTest --stacktrace
             mkdir -p app/build/reports/preview-screenshots
             adb pull /sdcard/Android/data/com.serhii.ifiles/files/preview-screenshots app/build/reports/preview-screenshots || true
+      - name: Remove signing key from runner
+        if: always()
+        run: rm -f ~/.android/debug.keystore
       - uses: actions/upload-artifact@v4
         with:
           name: iFiles-install-apk
           path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 3
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: verification-reports
           path: |
             app/build/reports/
+          retention-days: 3
 
       - name: Publish direct APK download
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -76,6 +82,17 @@ jobs:
           if [ "$LATEST" != "$GITHUB_SHA" ]; then
             echo "A newer commit exists; skipping publication."
             exit 0
+          fi
+          if [ "$REAL_SIGNING_KEY" != "true" ]; then
+            echo "::error::Not signed with the personal key; refusing to publish."
+            exit 1
+          fi
+          # Updates must install over existing installs: the certificate has to match the original key.
+          EXPECTED=7822930a6ddca6cce710bada97ca6a421697213f2cf4903a040c2626797a7abe
+          ACTUAL=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Unexpected signing certificate $ACTUAL"
+            exit 1
           fi
           VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
           test -n "$VERSION"

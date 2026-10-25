@@ -110,9 +110,9 @@ object Thumbnails {
     }
     if(error!=null)AlertDialog(onDismissRequest=onClose,confirmButton={TextButton(onClick=onClose){Text("Закрыть")}},text={Text(error!!)})
 }
-@Composable fun FilePreviewContent(e:Entry,s:Storage,kind:String) {
+@Composable fun FilePreviewContent(e:Entry,s:Storage,kind:String,onZoomed:(Boolean)->Unit={}) {
     when(kind) {
-        "image" -> ImagePreview(e.copy(mime="image/preview"),s)
+        "image" -> ImagePreview(e.copy(mime="image/preview"),s,onZoomed)
         "pdf" -> PdfPreview(e,s)
         "spreadsheet" -> SpreadsheetPreview(e,s)
         "word" -> WordPreview(e,s)
@@ -149,8 +149,12 @@ object Thumbnails {
         }
     }
 }
-@Composable private fun ZoomImage(bitmap: Bitmap) {
+@Composable private fun ZoomImage(bitmap: Bitmap,onZoomed:(Boolean)->Unit={}) {
     var scale by remember(bitmap){mutableFloatStateOf(1f)}; var x by remember(bitmap){mutableFloatStateOf(0f)};var y by remember(bitmap){mutableFloatStateOf(0f)}
+    val zoomed=scale>1f
+    // Single-finger drags at 1x are left unconsumed so the pager can swipe to the next photo.
+    LaunchedEffect(zoomed){onZoomed(zoomed)}
+    DisposableEffect(bitmap){onDispose{onZoomed(false)}}
     Box(Modifier.fillMaxSize().pointerInput(bitmap){awaitEachGesture {
         awaitFirstDown(requireUnconsumed=false)
         do {
@@ -168,10 +172,10 @@ object Thumbnails {
         Image(bitmap.asImageBitmap(),"Просмотр",Modifier.fillMaxSize().graphicsLayer(scaleX=scale,scaleY=scale,translationX=x,translationY=y))
     }
 }
-@Composable private fun ImagePreview(e: Entry,s: Storage) {
+@Composable private fun ImagePreview(e: Entry,s: Storage,onZoomed:(Boolean)->Unit={}) {
     var b by remember(e.ref){mutableStateOf<Bitmap?>(null)};var error by remember(e.ref){mutableStateOf<String?>(null)}
     LaunchedEffect(e.ref){ b=withContext(Dispatchers.IO){Thumbnails.load(s,e,2048)};if(b==null)error="Не удалось декодировать изображение" }
-    if(b!=null)ZoomImage(b!!) else if(error!=null)Text(error!!) else CircularProgressIndicator()
+    if(b!=null)ZoomImage(b!!,onZoomed) else if(error!=null)Text(error!!) else CircularProgressIndicator()
 }
 @Composable private fun TextPreview(e: Entry,s: Storage) {
     var text by remember(e.ref){mutableStateOf<String?>(null)}; var error by remember(e.ref){mutableStateOf<String?>(null)}

@@ -43,7 +43,7 @@ class FileEngineTest {
         assertTrue(f.exists());assertEquals(1024*1024L,f.length())
         assertEquals("copying",engine.trashRecords().single().getString("state"))
     }
-    @Test fun trashRestoreKeepsBackupAndNeverOverwrites() {
+    @Test fun trashRestoreRemovesBackupAndNeverOverwrites() {
         val folder=File(root,"Folder").apply{mkdirs()};File(folder,"a.txt").writeText("precious")
         engine.trash(ref(folder),ref(root));assertFalse(folder.exists())
         val record=engine.trashRecords().single();assertEquals("trashed",record.getString("state"))
@@ -51,7 +51,60 @@ class FileEngineTest {
         engine.restore(record.getString("id"),null)
         assertEquals("new",File(folder,"a.txt").readText())
         assertEquals("precious",File(root,"Folder (1)/a.txt").readText())
-        assertTrue(s.stat(record.getString("backup")).directory)
+        assertFalse(File(engine.trashRoot,record.getString("id")).exists())
+        assertTrue(engine.trashRecords().isEmpty())
+    }
+    @Test fun sameStorageMoveRenamesWithoutCopy() {
+        val folder=File(root,"Big").apply{mkdirs()};File(folder,"a.bin").writeBytes(ByteArray(4096){7})
+        val dest=File(root,"dest").apply{mkdirs()}
+        val inode=java.nio.file.Files.getAttribute(File(folder,"a.bin").toPath(),"unix:ino")
+        var reads=0
+        FileEngine(s,{false}){reads++}.move(ref(folder),ref(dest))
+        assertFalse(folder.exists())
+        val moved=File(dest,"Big/a.bin")
+        assertEquals(4096L,moved.length())
+        assertEquals(inode,java.nio.file.Files.getAttribute(moved.toPath(),"unix:ino"))
+        assertEquals("rename must not walk/copy files",0,reads)
+    }
+    @Test fun moveWithNameCollisionFallsBackToVerifiedCopy() {
+        val f=File(root,"x.txt").apply{writeText("new")}
+        val dest=File(root,"dest").apply{mkdirs()};File(dest,"x.txt").writeText("old")
+        engine.move(ref(f),ref(dest))
+        assertFalse(f.exists());assertEquals("old",File(dest,"x.txt").readText());assertEquals("new",File(dest,"x (1).txt").readText())
+    }
+    @Test fun expireTrashRemovesOnlyOldItems() {
+        val a=File(root,"old.txt").apply{writeText("1")};val b=File(root,"fresh.txt").apply{writeText("2")}
+        engine.trash(ref(a),ref(root));engine.trash(ref(b),ref(root))
+        val now=System.currentTimeMillis()
+        val old=engine.trashRecords().first{it.getString("name")=="old.txt"}
+        val dir=File(engine.trashRoot,old.getString("id"));s.atomic(File(dir,"record.json"),old.put("time",now-31L*24*60*60*1000))
+        assertEquals(1,engine.expireTrash(now))
+        assertEquals(listOf("fresh.txt"),engine.trashRecords().map{it.getString("name")})
+    }
+    @Test fun caseOnlyRename() {
+        val f=File(root,"photo.jpg").apply{writeText("x")}
+        val renamed=s.rename(ref(f),"Photo.JPG",ref(root))
+        assertEquals("Photo.JPG",s.stat(renamed).name)
+        assertEquals(listOf("Photo.JPG"),root.list()!!.toList())
+    }
+    @Test fun copyFolderWithManyFilesKeepsAllNames() {
+        val folder=File(root,"Many").apply{mkdirs()};repeat(300){File(folder,"f$it.txt").writeText("$it")}
+        val dest=File(root,"dest").apply{mkdirs()}
+        val copy=engine.copy(ref(folder),ref(dest))
+        assertEquals(300,s.list(copy).size)
+        assertTrue(engine.equivalent(ref(folder),copy))
+    }
+    @Test fun parentPrefsAreBoundedAndOldKeysMigrated() {
+        val ctx=s.context
+        val ref="content://com.android.externalstorage.documents/tree/primary%3AX/document/primary%3AX%2Fa"
+        ctx.getSharedPreferences("ifiles",0).edit().clear().putString("parent:$ref","p").putString("parent:other","q")
+            .putString("recent",org.json.JSONArray(listOf(ref)).toString()).commit()
+        ctx.getSharedPreferences("ifiles-parents",0).edit().clear().commit()
+        val f=Storage::class.java.getDeclaredField("parentsMigrated");f.isAccessible=true;f.setBoolean(null,false)
+        val fresh=Storage(ctx)
+        assertTrue(fresh.prefs.all.keys.none{it.startsWith("parent:")})
+        assertEquals("p",fresh.parentOf(ref))
+        assertNull(fresh.parentPrefs.getString("other",null))
     }
     @Test fun renameNeverOverwritesEvenWithWrongCallerParent() {
         val source=File(root,"source.txt").apply{writeText("source")}

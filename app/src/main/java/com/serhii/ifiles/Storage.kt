@@ -43,11 +43,51 @@ object Names {
 }
 
 class Storage(val context: Context) {
-    companion object { private val parents=android.util.LruCache<String,String>(50000) }
-    fun parentOf(ref: String): String? = if(isFile(ref))file(ref).parentFile?.toURI()?.toString() else parents.get(ref) ?: prefs.getString("parent:$ref",null)
-    fun rememberParent(ref: String) { parentOf(ref)?.let{prefs.edit().putString("parent:$ref",it).apply()} }
+    companion object {
+        private val parents=android.util.LruCache<String,String>(50000)
+        const val PARENT_LIMIT=1000
+        @Volatile private var parentsMigrated=false
+    }
     val resolver = context.contentResolver
     val prefs = context.getSharedPreferences("ifiles", Context.MODE_PRIVATE)
+    /** Bounded store of document parents, needed only to survive process death for recents/favorites. */
+    val parentPrefs = context.getSharedPreferences("ifiles-parents", Context.MODE_PRIVATE)
+    init { migrateParents() }
+    fun parentOf(ref: String): String? = if(isFile(ref))file(ref).parentFile?.toURI()?.toString() else parents.get(ref) ?: parentPrefs.getString(ref,null)
+    fun rememberParent(ref: String) {
+        if(isFile(ref))return
+        val parent=parentOf(ref) ?: return
+        if(parentPrefs.getString(ref,null)==parent)return
+        parentPrefs.edit().putString(ref,parent).apply()
+        if(parentPrefs.all.size>PARENT_LIMIT)pruneParents()
+    }
+    /** Keep parents of refs that the app still shows after restart; drop the rest. */
+    fun pruneParents() {
+        val keep=strings("favorites")+recents().toSet()
+        val editor=parentPrefs.edit()
+        val stale=parentPrefs.all.keys.filter { it !in keep }
+        stale.forEach { editor.remove(it) }
+        editor.apply()
+    }
+    /** Old builds stored one "parent:<ref>" entry per tap in the main prefs, growing forever. */
+    private fun migrateParents() {
+        if(parentsMigrated)return
+        synchronized(Storage::class.java) {
+            if(parentsMigrated)return
+            if(!prefs.getBoolean("parentsMigrated",false)) {
+                val old=prefs.all.filterKeys { it.startsWith("parent:") }
+                if(old.isNotEmpty()) {
+                    val keep=strings("favorites")+recents().toSet()
+                    val moved=parentPrefs.edit()
+                    old.forEach { (key,value) -> val ref=key.removePrefix("parent:"); if(ref in keep && value is String)moved.putString(ref,value) }
+                    moved.commit()
+                }
+                val editor=prefs.edit(); old.keys.forEach { editor.remove(it) }
+                editor.putBoolean("parentsMigrated",true).commit()
+            }
+            parentsMigrated=true
+        }
+    }
     val local = File(context.filesDir, "Documents").apply { mkdirs() }.toURI().toString()
     val phone: String get() = Environment.getExternalStorageDirectory().toURI().toString()
     val downloads: String get() = File(Environment.getExternalStorageDirectory(), "Download").toURI().toString()
@@ -116,9 +156,10 @@ class Storage(val context: Context) {
     }
     fun input(ref: String): InputStream = if(isFile(ref)) FileInputStream(file(ref)) else resolver.openInputStream(uri(ref)) ?: error("Не удалось открыть файл")
     fun output(ref: String): OutputStream = if(isFile(ref)) FileOutputStream(file(ref)) else resolver.openOutputStream(uri(ref),"wt") ?: error("Нет доступа на запись")
-    fun create(parent: String, name: String, directory: Boolean, type: String = mime(name)): String {
+    /** [checked] = caller already guarantees [name] is free in [parent] (avoids re-listing per child). */
+    fun create(parent: String, name: String, directory: Boolean, type: String = mime(name), checked: Boolean = false): String {
         Names.check(name)
-        require(list(parent).none { it.name.equals(name,true) }) { "Файл с таким именем уже существует" }
+        if(!checked)require(list(parent).none { it.name.equals(name,true) }) { "Файл с таким именем уже существует" }
         if(isFile(parent)) {
             val p=file(parent).canonicalFile
             val f=File(p,name)
@@ -138,14 +179,29 @@ class Storage(val context: Context) {
     fun rename(ref: String, name: String, parent: String): String {
         Names.check(name)
         return if(isFile(ref)) {
-            val source=file(ref); val target=File(source.parentFile,name)
-            require(!target.exists() || target.canonicalFile==source.canonicalFile) { "Имя занято" }
-            Files.move(source.toPath(),target.toPath())
+            val source=file(ref); val folder=source.parentFile ?: error("Недопустимый путь")
+            if(name==source.name)return ref
+            val siblings=folder.list().orEmpty()
+            require(siblings.none { it.equals(name,true) && it!=source.name }) { "Имя занято" }
+            val target=File(folder,name)
+            if(name.equals(source.name,true)) {
+                // Case-only rename: case-insensitive storage treats both names as the same file, so go via a temporary name.
+                val temp=File(folder,".ifiles-rename-"+UUID.randomUUID())
+                Files.move(source.toPath(),temp.toPath())
+                try { Files.move(temp.toPath(),target.toPath()) } catch(e: Exception) { Files.move(temp.toPath(),source.toPath()); throw e }
+            } else Files.move(source.toPath(),target.toPath())
             target.toURI().toString()
         } else {
+            val current=stat(ref).name
+            if(name==current)return ref
             require(list(parent).none { it.name.equals(name,true) && it.ref != ref }) { "Имя занято" }
-            val renamed=DC.renameDocument(resolver,uri(ref),name)?.toString() ?: error("Переименование не поддерживается")
-            parents.put(renamed,parent);rememberParent(renamed);renamed
+            val renamed=if(name.equals(current,true)) {
+                val temp=DC.renameDocument(resolver,uri(ref),".ifiles-rename-"+UUID.randomUUID()) ?: error("Переименование не поддерживается")
+                try { DC.renameDocument(resolver,temp,name) ?: error("Переименование не поддерживается") }
+                catch(e: Exception) { runCatching { DC.renameDocument(resolver,temp,current) }; throw e }
+            } else DC.renameDocument(resolver,uri(ref),name) ?: error("Переименование не поддерживается")
+            val result=renamed.toString()
+            parents.put(result,parent);rememberParent(result);result
         }
     }
     fun delete(ref: String) {
@@ -195,6 +251,7 @@ class Storage(val context: Context) {
 
 /** Streamed, bounded-memory verified operations. Never follows local symlinks. */
 class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progress: (String) -> Unit = {}) {
+    companion object { const val TRASH_DAYS=30L }
     fun checkpoint() { if(stopped()) throw InterruptedIOException("Операция прервана; исходные файлы сохранены") }
     fun digest(ref: String): Pair<Long,String> = s.input(ref).use { input ->
         val md=MessageDigest.getInstance("SHA-256"); val buf=ByteArray(256*1024); var size=0L
@@ -225,16 +282,27 @@ class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progr
             }
         }
     }
-    fun copy(source: String, parent: String, name: String? = null, depth: Int = 0): String {
+    /**
+     * [freshName] is set for children of a folder this engine just created: the destination is known to be
+     * empty, so names are de-duplicated against [taken] in memory instead of re-listing the folder per child.
+     */
+    fun copy(source: String, parent: String, name: String? = null, depth: Int = 0, freshName: Boolean = false): String {
         checkpoint(); require(depth<128) { "Слишком глубокая вложенность" }
-        assertOutside(source,parent)
+        if(depth==0)assertOutside(source,parent)
         val e=s.stat(source); progress(e.name)
         if(e.directory && s.isFile(source))require(s.file(source).listFiles()?.none { Files.isSymbolicLink(it.toPath()) } == true) { "Папка содержит символические ссылки; операция отменена" }
         val children=if(e.directory)s.list(source) else emptyList()
-        val target=s.create(parent,name ?: s.unique(parent,e.name),e.directory,e.mime)
+        val target=s.create(parent,name ?: s.unique(parent,e.name),e.directory,e.mime,checked=freshName)
         // On failure retain the partial output for recovery; never remove the source.
-        if(e.directory) children.forEach { copy(it.ref,target,it.name,depth+1) } else transfer(source,target)
-        s.scan(target); return target
+        if(e.directory) {
+            val taken=HashSet<String>()
+            children.forEach { child ->
+                val childName=Names.unique(child.name) { it.lowercase() in taken }
+                taken+=childName.lowercase()
+                copy(child.ref,target,childName,depth+1,freshName=true)
+            }
+        } else transfer(source,target)
+        if(depth==0 || !e.directory)s.scan(target); return target
     }
     fun equivalent(source: String, copy: String, depth: Int = 0): Boolean {
         checkpoint(); require(depth<128)
@@ -257,15 +325,60 @@ class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progr
         } else check(digest(source)==digest(copy)) { "Исходный файл изменился; он сохранён" }
         checkpoint(); s.delete(source); s.scan(source)
     }
-    fun move(source: String, parent: String) {
+    fun move(source: String, parent: String, sourceParent: String? = null) {
+        assertOutside(source,parent)
+        val renamed=runCatching { rename(source,parent,sourceParent) }.getOrNull()
+        if(renamed!=null) { s.rewriteRef(source,renamed); return }
         val target=copy(source,parent)
         check(equivalent(source,target)) { "Папка изменилась; исходник сохранён" }
         removeVerified(source,target)
     }
+    /**
+     * Same-storage move without copying: File.renameTo / DocumentsContract.moveDocument.
+     * Returns null when not possible (different volume, provider without move, name taken) so the caller copies instead.
+     */
+    fun rename(source: String, parent: String, sourceParent: String? = null): String? {
+        checkpoint()
+        if(s.isFile(source) && s.isFile(parent)) {
+            val from=s.file(source); val folder=s.file(parent)
+            if(Files.isSymbolicLink(from.toPath()) || !from.exists() || !folder.isDirectory)return null
+            if(from.parentFile?.canonicalFile==folder.canonicalFile)return null
+            if(folder.list().orEmpty().any { it.equals(from.name,true) })return null
+            val to=File(folder,from.name)
+            // renameTo never copies: it fails across file systems (internal ↔ SD/USB), which then falls back to verified copy.
+            if(!from.renameTo(to))return null
+            s.scan(source); s.scan(to.toURI().toString())
+            return to.toURI().toString()
+        }
+        if(s.isFile(source) || s.isFile(parent))return null
+        val a=s.uri(source); val b=s.uri(parent)
+        if(a.authority!=b.authority || !DC.isDocumentUri(s.context,a))return null
+        val from=sourceParent?.takeIf { !s.isFile(it) } ?: s.parentOf(source) ?: return null
+        val fromUri=s.uri(from).let { if(from.contains("/document/"))it else DC.buildDocumentUriUsingTree(it,DC.getTreeDocumentId(it)) }
+        val toUri=if(parent.contains("/document/"))b else DC.buildDocumentUriUsingTree(b,DC.getTreeDocumentId(b))
+        if(fromUri==toUri)return null
+        val e=s.stat(source)
+        if(s.list(parent).any { it.name.equals(e.name,true) })return null
+        val flags=s.resolver.query(a,arrayOf(DC.Document.COLUMN_FLAGS),android.os.Bundle.EMPTY,null)?.use { c -> if(c.moveToFirst())c.getInt(0) else 0 } ?: 0
+        if(flags and DC.Document.FLAG_SUPPORTS_MOVE==0)return null
+        return DC.moveDocument(s.resolver,a,fromUri,toUri)?.toString()
+    }
     val trashRoot: File get() = File(s.context.filesDir,"trash").apply { mkdirs() }
     fun trashRecords(): List<JSONObject> = trashRoot.listFiles().orEmpty().filter { it.isDirectory }.mapNotNull { dir ->
         runCatching { s.read(File(dir,"record.json")) }.getOrNull()
-    }.sortedByDescending { it.optLong("time") }
+    }.filter { it.optString("state")!="restored" }.sortedByDescending { it.optLong("time") }
+    /** Empties trash items older than [maxAgeMs] (default 30 days) and leftovers of finished restores. Returns removed count. */
+    fun expireTrash(now: Long = System.currentTimeMillis(), maxAgeMs: Long = TRASH_DAYS*24L*60*60*1000): Int {
+        var removed=0
+        for(dir in trashRoot.listFiles().orEmpty()) {
+            if(!dir.isDirectory || !Regex("[a-f0-9-]{36}").matches(dir.name))continue
+            val rec=runCatching { s.read(File(dir,"record.json")) }.getOrNull()
+            val time=rec?.optLong("time") ?: dir.lastModified()
+            val old=now-time>maxAgeMs
+            if((old || rec?.optString("state")=="restored") && dir.deleteRecursively())removed++
+        }
+        return removed
+    }
     fun trash(source: String, parent: String) {
         val e=s.stat(source); val id=UUID.randomUUID().toString(); val dir=File(trashRoot,id).apply { mkdirs() }
         val payload=File(dir,"payload").apply { mkdirs() }.toURI().toString()
@@ -285,7 +398,8 @@ class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progr
         require(rec.optString("state")!="copying") { "Незавершённая копия: исходник не удалялся" }
         val backup=rec.getString("backup"); val target=copy(backup,parent ?: rec.getString("parent"))
         check(equivalent(backup,target)); rec.put("state","restored").put("restoredTo",target); s.atomic(File(dir,"record.json"),rec)
-        // Keep verified backup until explicit purge, including after successful restore.
+        // The restored copy is verified, so the backup is no longer needed; free the space.
+        dir.deleteRecursively()
     }
     fun purgeMany(ids: List<String>) {
         // Validate the complete snapshot before deleting anything.
