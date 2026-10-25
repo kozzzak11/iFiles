@@ -28,7 +28,8 @@ class MainScreenTest {
     private val device get()=UiDevice.getInstance(ins)
     private val shots get()=File(context.getExternalFilesDir(null),"preview-screenshots").apply{mkdirs()}
     private fun shell(command: String){android.os.ParcelFileDescriptor.AutoCloseInputStream(ins.uiAutomation.executeShellCommand(command)).use{it.readBytes()}}
-    private fun shot(name: String){device.waitForIdle();Thread.sleep(400);device.takeScreenshot(File(shots,"$name.png"))}
+    // Saved by the shell user under /data/local/tmp as well: app files are removed when the test APK is uninstalled.
+    private fun shot(name: String){device.waitForIdle();Thread.sleep(400);device.takeScreenshot(File(shots,"$name.png"));shell("mkdir -p /data/local/tmp/ifiles-screens");shell("screencap -p /data/local/tmp/ifiles-screens/$name.png")}
     private fun find(text: String, timeout: Long=15000): UiObject2 {
         assertTrue("Missing \"$text\"",device.wait(Until.hasObject(By.text(text)),timeout))
         return device.findObject(By.text(text))

@@ -54,7 +54,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            gradle :app:connectedDebugAndroidTest --stacktrace; status=$?; mkdir -p app/build/reports/preview-screenshots; adb pull /sdcard/Android/data/com.serhii.ifiles/files/preview-screenshots app/build/reports/preview-screenshots || true; exit $status
+            gradle :app:connectedDebugAndroidTest --stacktrace; status=$?; mkdir -p app/build/reports/preview-screenshots; adb pull /sdcard/Android/data/com.serhii.ifiles/files/preview-screenshots app/build/reports/preview-screenshots || true; adb pull /data/local/tmp/ifiles-screens app/build/reports/preview-screenshots || true; exit $status
       - name: Remove signing key from runner
         if: always()
         run: rm -f ~/.android/debug.keystore
