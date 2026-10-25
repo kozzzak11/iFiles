@@ -10,8 +10,8 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -121,16 +121,16 @@ data class MenuAction(val label: String, val icon: ImageVector, val destructive:
                 }
                 Spacer(Modifier.height(10.dp))
                 val rows=groups.filter{it.isNotEmpty()}
-                LazyColumn(Modifier.shadow(18.dp,RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surface.copy(alpha=.97f)).heightIn(max=460.dp)) {
+                Column(Modifier.shadow(18.dp,RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surface.copy(alpha=.97f)).heightIn(max=600.dp).verticalScroll(rememberScrollState())) {
                     rows.forEachIndexed { g, group ->
-                        itemsIndexed(group) { i, a ->
-                            Row(Modifier.fillMaxWidth().clickable{onDismiss();a.run()}.padding(horizontal=16.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically) {
+                        group.forEachIndexed { i, a ->
+                            Row(Modifier.fillMaxWidth().clickable{onDismiss();a.run()}.padding(horizontal=16.dp,vertical=11.dp),verticalAlignment=Alignment.CenterVertically) {
                                 Text(a.label,Modifier.weight(1f),fontSize=17.sp,color=if(a.destructive)Ios.Red else MaterialTheme.colorScheme.onSurface)
                                 Icon(a.icon,null,Modifier.size(20.dp),tint=if(a.destructive)Ios.Red else MaterialTheme.colorScheme.onSurface)
                             }
                             if(i<group.lastIndex)HorizontalDivider(thickness=0.5.dp,color=Ios.separator(dark))
                         }
-                        if(g<rows.lastIndex)item{Box(Modifier.fillMaxWidth().height(8.dp).background(Ios.separator(dark).copy(alpha=.35f)))}
+                        if(g<rows.lastIndex)Box(Modifier.fillMaxWidth().height(8.dp).background(Ios.separator(dark).copy(alpha=.35f)))
                     }
                 }
             }

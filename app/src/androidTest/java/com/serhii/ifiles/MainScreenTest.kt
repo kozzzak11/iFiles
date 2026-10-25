@@ -80,7 +80,7 @@ class MainScreenTest {
 
             // Swipe right adds to Favorites; folders can be starred from the context menu.
             val photo=find("Фото с отпуска.png").visibleBounds
-            device.swipe(w*10/100,photo.centerY(),w*80/100,photo.centerY(),12)
+            device.swipe(w*20/100,photo.centerY(),w*92/100,photo.centerY(),12)
             desc("В избранном")
             find("Проекты").longClick();find("В избранное").click()
 
@@ -111,7 +111,7 @@ class MainScreenTest {
 
             // Full swipe left moves the file to the trash.
             val bin=find("data.bin").visibleBounds
-            device.swipe(w*95/100,bin.centerY(),w*3/100,bin.centerY(),15)
+            device.swipe(w*85/100,bin.centerY(),w*3/100,bin.centerY(),15)
             assertTrue("Swipe-to-delete must trash the file",device.wait(Until.gone(By.text("data.bin")),20000))
             assertFalse(File(dir,"data.bin").exists())
         }
