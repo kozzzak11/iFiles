@@ -51,6 +51,7 @@ class MediaActivity:ComponentActivity() {
     private var controller by mutableStateOf<MediaController?>(null)
     private var future:ListenableFuture<MediaController>?=null
     private var pip by mutableStateOf(false)
+    private var imageZoomed by mutableStateOf(false)
     private var pipExitPending=false
     private var fullscreen by mutableStateOf(false)
     private var resizeMode by mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT)
@@ -109,7 +110,7 @@ class MediaActivity:ComponentActivity() {
                                     }
                                 }
                             }
-                            HorizontalPager(state=pager,userScrollEnabled=false,modifier=Modifier.weight(1f).fillMaxWidth(),key={queue.getOrNull(it)?.ref ?: "media"}) {index->
+                            HorizontalPager(state=pager,userScrollEnabled=currentKind=="image" && !imageZoomed && !pip && queue.size>1,modifier=Modifier.weight(1f).fillMaxWidth(),key={queue.getOrNull(it)?.ref ?: "media"}) {index->
                                 Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
                                     if(index==pager.settledPage) {
                                         if(currentKind=="media" || queue.isEmpty()) {
@@ -122,7 +123,7 @@ class MediaActivity:ComponentActivity() {
                                             if(error!=null && !pip)Surface{Text(error!!,Modifier.padding(24.dp))} else if(loading)CircularProgressIndicator()
                                         } else if(error!=null)Text(error!!,Modifier.padding(24.dp))
                                         else if(current==null || currentKind.isEmpty())CircularProgressIndicator()
-                                        else key(current!!.ref){FilePreviewContent(current!!,Storage(this@MediaActivity),currentKind)}
+                                        else key(current!!.ref){FilePreviewContent(current!!,Storage(this@MediaActivity),currentKind){imageZoomed=it}}
                                     }
                                 }
                             }

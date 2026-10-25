@@ -38,24 +38,33 @@ class FilesViewModel(app: Application): AndroidViewModel(app) {
     }
     init {
         storageManager.registerStorageVolumeCallback(app.mainExecutor,volumeCallback)
-        runCatching {
-            val refs=JSONArray(storage.prefs.getString("stack","[]"));val stack=(0 until refs.length()).map { storage.stat(refs.getString(it)) }.takeWhile { it.directory }
-            mutable.value=mutable.value.copy(stack=stack,tab=storage.prefs.getString("tab","Обзор")!!)
+        mutable.value=mutable.value.copy(tab=storage.prefs.getString("tab","Обзор")!!)
+        // Restoring the last folder touches storage/providers: do it off the main thread.
+        viewModelScope.launch {
+            val stack=withContext(Dispatchers.IO) { runCatching {
+                val refs=JSONArray(storage.prefs.getString("stack","[]"))
+                (0 until refs.length()).map { storage.stat(refs.getString(it)) }.takeWhile { it.directory }
+            }.getOrDefault(emptyList()) }
+            if(mutable.value.stack.isEmpty() && stack.isNotEmpty())mutable.value=mutable.value.copy(stack=stack)
+            refresh()
         }
+        viewModelScope.launch(Dispatchers.IO) { runCatching { FileEngine(storage).expireTrash() } }
         viewModelScope.launch {
             WorkManager.getInstance(app).getWorkInfosForUniqueWorkFlow(Operations.QUEUE).collect { jobs ->
                 val completed=jobs.filter { it.state.isFinished && previousJobs[it.id]?.isFinished == false }
                 previousJobs=jobs.associate { it.id to it.state }
                 mutable.value=mutable.value.copy(jobs=jobs.sortedByDescending { it.id.toString() })
                 if(completed.isNotEmpty()) {
-                    val failure=completed.firstOrNull { it.state==WorkInfo.State.FAILED }
+                    val failure=completed.firstOrNull { it.state==WorkInfo.State.FAILED || it.outputData.getString("error")!=null }
                     mutable.value=mutable.value.copy(notice=failure?.outputData?.getString("error") ?: "Готово")
                     refresh()
                 }
             }
         }
-        refresh()
     }
+    private val scroll=HashMap<String,Pair<Int,Int>>()
+    fun scrollOf(key: String): Pair<Int,Int> = scroll[key] ?: (0 to 0)
+    fun saveScroll(key: String, index: Int, offset: Int) { scroll[key]=index to offset }
     fun change(f: (ScreenState)->ScreenState) { mutable.value=f(mutable.value) }
     fun notice(text: String?) = change { it.copy(notice=text) }
     fun error(e: Throwable) = notice(e.message ?: "Ошибка")

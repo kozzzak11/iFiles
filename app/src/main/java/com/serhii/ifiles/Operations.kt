@@ -19,11 +19,20 @@ object Operations {
     const val QUEUE="ifiles-operations"
     fun enqueue(context: Context, kind: String, refs: List<String> = emptyList(), parent: String = "", name: String = "", sourceParent: String = ""): UUID {
         val id=UUID.randomUUID(); val s=Storage(context)
+        sweep(context)
         val request=JSONObject().put("kind",kind).put("refs",JSONArray(refs)).put("parent",parent).put("name",name).put("sourceParent",sourceParent)
         s.atomic(File(context.filesDir,"tasks/$id.json"),request)
         val work=OneTimeWorkRequestBuilder<OperationWorker>().setId(id).setInputData(workDataOf("task" to id.toString())).build()
         WorkManager.getInstance(context).enqueueUniqueWork(QUEUE,ExistingWorkPolicy.APPEND_OR_REPLACE,work)
         return id
+    }
+    /** Task files of finished jobs are removed by the worker; this drops leftovers of killed/cancelled jobs. */
+    fun sweep(context: Context, now: Long = System.currentTimeMillis()) {
+        val week=7L*24*60*60*1000
+        File(context.filesDir,"tasks").listFiles().orEmpty().filter { now-it.lastModified()>week }.forEach { it.delete() }
+    }
+    fun clean(context: Context, id: UUID) {
+        listOf("json","started","result").forEach { File(context.filesDir,"tasks/$id.$it").delete() }
     }
 }
 class OperationWorker(context: Context, params: WorkerParameters): CoroutineWorker(context,params) {
@@ -31,7 +40,9 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
         val s=Storage(applicationContext);val task=File(applicationContext.filesDir,"tasks/${id}.json")
         // WorkManager may restart after process death. Do not replay destructive jobs automatically.
         val started=File(applicationContext.filesDir,"tasks/${id}.started")
-        if(started.exists())return@withContext Result.failure(workDataOf("error" to "Операция прервалась. Проверьте исходник, папку назначения и корзину перед повтором."))
+        // Never return failure: in an APPEND chain one failed job would fail every queued job after it.
+        // Errors are reported through output data instead and the queue keeps going.
+        if(started.exists()) { Operations.clean(applicationContext,id); return@withContext Result.success(workDataOf("error" to "Операция прервалась. Проверьте исходник, папку назначения и корзину перед повтором.")) }
         try {
             val r=s.read(task);val kind=r.getString("kind")
             setForeground(notification("Подготовка…"))
@@ -55,11 +66,12 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
                 "purge" -> engine.purgeMany(refs)
                 else -> error("Неизвестная операция")
             }
-            s.atomic(File(applicationContext.filesDir,"tasks/${id}.result"),JSONObject().put("ok",true))
+            Operations.clean(applicationContext,id)
             Result.success(workDataOf("message" to "Готово"))
         } catch(e: Exception) {
             if(e is kotlinx.coroutines.CancellationException)throw e
-            Result.failure(workDataOf("error" to (e.message ?: "Операция не выполнена").take(1000)))
+            Operations.clean(applicationContext,id)
+            Result.success(workDataOf("error" to (e.message ?: "Операция не выполнена").take(1000)))
         }
     }
     private fun notification(text: String): ForegroundInfo {
