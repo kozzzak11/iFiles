@@ -18,40 +18,56 @@ import java.util.ArrayDeque
 import java.util.UUID
 
 /**
- * Copies [input] to [out] in 256 KB chunks. Each chunk is flushed and, for a real file
- * (including a SAF [FileOutputStream]), synced before its bytes are reported — so the
- * percent tracks data that has left the page cache, not a buffer that finishes instantly.
+ * Large writes, bytes counted as they are handed to the stream.
+ * fsync runs at the end of the file and at most every [SYNC_EVERY] bytes — not per chunk.
+ * A per-chunk fsync on exFAT/FUSE (USB) stalls for minutes and freezes the progress ticker.
  */
 object TransferCopy {
-    const val CHUNK = 256 * 1024
+    const val BUFFER = 4 * 1024 * 1024
+    const val SYNC_EVERY = 64L * 1024 * 1024
     fun pump(
         input: InputStream,
         out: OutputStream,
         checkpoint: () -> Unit,
         onBytes: (Long) -> Unit,
-        sync: (OutputStream) -> Unit = ::sync
+        beforeSync: () -> Unit = {},
+        sync: (OutputStream) -> Unit = ::sync,
+        syncEvery: Long = SYNC_EVERY
     ) {
-        val buf = ByteArray(CHUNK)
-        var pending = 0L
-        fun push(force: Boolean) {
-            if (pending <= 0L || (!force && pending < CHUNK)) return
-            sync(out)
-            onBytes(pending)
-            pending = 0L
-        }
+        val buf = ByteArray(BUFFER)
+        var since = 0L
         while (true) {
             checkpoint()
             val n = input.read(buf)
             if (n < 0) break
             out.write(buf, 0, n)
-            pending += n
-            push(false)
+            onBytes(n.toLong())
+            since += n
+            if (since >= syncEvery) {
+                beforeSync()
+                sync(out)
+                since = 0L
+            }
         }
-        push(true)
+        beforeSync()
+        sync(out)
     }
     fun sync(out: OutputStream) {
         out.flush()
         if (out is FileOutputStream) out.fd.sync()
+    }
+}
+
+/** Posts at most once a second, and never repeats the same text. */
+class NotifyGate(private val minMs: Long = 1000) {
+    private var lastAt = -1L
+    private var lastKey = ""
+    fun allow(key: String, now: Long = System.currentTimeMillis()): Boolean {
+        if (key == lastKey) return false
+        if (lastAt >= 0L && now - lastAt < minMs) return false
+        lastAt = now
+        lastKey = key
+        return true
     }
 }
 
@@ -66,6 +82,11 @@ class TransferTracker {
     private var fileCount = 0
     private var fileName = ""
     private var lastByteAt = 0L
+    private var phaseAt = 0L
+    private var verifyDone = 0L
+    private var verifyPlanned = 0L
+    private var fileVerifyDone = 0L
+    private var fileVerifyTotal = 0L
     private val samples = ArrayDeque<Pair<Long, Long>>()
 
     fun setKind(value: String) = synchronized(lock) { kind = value }
@@ -88,46 +109,98 @@ class TransferTracker {
         if (n <= 0L) return
         bytesDone += n
         lastByteAt = now
+        if (phase != "write") { samples.clear(); phaseAt = now }
         phase = "write"
-        samples.addLast(now to bytesDone)
-        val cutoff = now - 8_000
-        while (samples.size > 1 && samples.first().first < cutoff) samples.removeFirst()
+        remember(now, bytesDone)
+    }
+    /** One hash pass of [name]. Resets the current-file bar; overall verified bytes keep accumulating. */
+    fun startVerify(name: String, size: Long, now: Long = System.currentTimeMillis()) = synchronized(lock) {
+        if (phase != "verify") {
+            lastByteAt = now
+            phaseAt = now
+            samples.clear()
+            samples.addLast(now to verifyDone)
+            if (verifyPlanned == 0L && bytesTotal > 0L) verifyPlanned = bytesTotal * 2
+        }
+        phase = "verify"
+        fileVerifyDone = 0
+        fileVerifyTotal = size.coerceAtLeast(0)
+        if (name.isNotEmpty()) fileName = name.take(150)
+    }
+    fun addVerified(n: Long, now: Long = System.currentTimeMillis()) = synchronized(lock) {
+        if (n <= 0L) return
+        verifyDone += n
+        fileVerifyDone += n
+        lastByteAt = now
+        if (phase != "verify") { samples.clear(); phaseAt = now }
+        phase = "verify"
+        remember(now, verifyDone)
     }
     fun phase(value: String, now: Long = System.currentTimeMillis()) = synchronized(lock) {
+        if (value != phase) phaseAt = now
         if (value == "write" && phase != "write") {
             lastByteAt = now
             samples.clear()
             samples.addLast(now to bytesDone)
         }
+        if (value == "verify" && phase != "verify") {
+            lastByteAt = now
+            samples.clear()
+            samples.addLast(now to verifyDone)
+            if (verifyPlanned == 0L && bytesTotal > 0L) verifyPlanned = bytesTotal * 2
+        }
         phase = value
     }
+    private fun remember(now: Long, value: Long) {
+        samples.addLast(now to value)
+        val cutoff = now - 8_000
+        while (samples.size > 1 && samples.first().first < cutoff) samples.removeFirst()
+    }
     fun snapshot(now: Long = System.currentTimeMillis()): TransferSnap = synchronized(lock) {
-        val speed = speedAt(now)
-        val stalled = phase == "write" && lastByteAt > 0L && now - lastByteAt >= STALL_MS &&
-            (bytesTotal <= 0L || bytesDone < bytesTotal)
-        val percent = when {
+        val writing = phase != "verify"
+        val cursor = if (writing) bytesDone else verifyDone
+        val speed = speedAt(now, cursor)
+        val stallClock = phase == "write" || phase == "verify"
+        val stalled = stallClock && lastByteAt > 0L && now - lastByteAt >= STALL_MS &&
+            (if (phase == "verify") fileVerifyTotal <= 0L || fileVerifyDone < fileVerifyTotal
+             else bytesTotal <= 0L || bytesDone < bytesTotal)
+        val writePercent = when {
             bytesTotal <= 0L -> -1
             bytesDone <= 0L -> 0
             bytesDone >= bytesTotal -> if (phase == "done") 100 else 99
             else -> ((bytesDone * 100) / bytesTotal).toInt().coerceIn(0, 99)
         }
-        val eta = if (!stalled && speed > 0L && bytesTotal > bytesDone) (bytesTotal - bytesDone) * 1000 / speed else -1L
+        val filePercent = if (fileVerifyTotal > 0L) ((fileVerifyDone * 100) / fileVerifyTotal).toInt().coerceIn(0, 100) else -1
+        val overallPercent = if (verifyPlanned > 0L) ((verifyDone.coerceAtMost(verifyPlanned) * 100) / verifyPlanned).toInt().coerceIn(0, 99) else filePercent
+        val percent = when (phase) {
+            "verify" -> if (filePercent >= 0) filePercent else overallPercent
+            "sync" -> writePercent
+            else -> writePercent
+        }
+        val fileEta = if (!stalled && speed > 0L && fileVerifyTotal > fileVerifyDone) (fileVerifyTotal - fileVerifyDone) * 1000 / speed else -1L
+        val overallRemain = if (phase == "verify") verifyPlanned - verifyDone else bytesTotal - bytesDone
+        val eta = if (!stalled && speed > 0L && overallRemain > 0L) overallRemain * 1000 / speed else -1L
         TransferSnap(
             kind, phase, bytesDone, bytesTotal, fileIndex, fileCount, fileName,
             if (stalled) 0L else speed, eta, stalled, percent,
-            if (stalled) ((now - lastByteAt) / 1000).toInt() else 0
+            if (stalled) ((now - lastByteAt) / 1000).toInt() else 0,
+            if (phaseAt > 0L) ((now - phaseAt) / 1000).toInt().coerceAtLeast(0) else 0,
+            verifyDone, verifyPlanned, fileVerifyDone, fileVerifyTotal, fileEta, overallPercent
         )
     }
-    private fun speedAt(now: Long): Long {
+    private fun speedAt(now: Long, current: Long): Long {
         if (samples.isEmpty()) return 0L
         val cutoff = now - 5_000
         val start = samples.lastOrNull { it.first <= cutoff } ?: samples.first()
         val dt = now - start.first
         if (dt < 500L) return 0L
-        val delta = bytesDone - start.second
+        val delta = current - start.second
         return if (delta <= 0L) 0L else delta * 1000 / dt
     }
-    companion object { const val STALL_MS = 15_000L }
+    companion object {
+        const val STALL_MS = 15_000L
+        const val HINT_MS = 120_000L
+    }
 }
 
 data class TransferSnap(
@@ -142,11 +215,21 @@ data class TransferSnap(
     val etaMs: Long,
     val stalled: Boolean,
     val percent: Int,
-    val stallSec: Int
+    val stallSec: Int,
+    val phaseSec: Int = 0,
+    val verifyDone: Long = 0,
+    val verifyPlanned: Long = 0,
+    val fileVerifyDone: Long = 0,
+    val fileVerifyTotal: Long = 0,
+    val fileEtaMs: Long = -1,
+    val overallPercent: Int = -1
 ) {
     val indeterminate: Boolean get() = percent < 0 || phase == "prepare"
+    val longStall: Boolean get() = stalled && stallSec >= TransferTracker.HINT_MS / 1000
     fun title(): String = when {
         stalled -> "Ожидание устройства…"
+        phase == "sync" -> "Сохранение на устройство…"
+        phase == "verify" && percent >= 0 -> "Проверка копии $percent%"
         phase == "verify" -> "Проверка копии"
         phase == "prepare" -> "Подсчёт…"
         percent >= 0 -> "${kindTitle(kind)} $percent%"
@@ -154,20 +237,32 @@ data class TransferSnap(
     }
     /** Collapsed notification line: file, X of Y, speed, ETA (or how long the port has been silent). */
     fun line(): String {
-        val parts = ArrayList<String>(5)
+        val parts = ArrayList<String>(6)
         if (fileName.isNotEmpty()) parts += fileName
-        if (bytesTotal > 0L) parts += "${humanSize(bytesDone)} из ${humanSize(bytesTotal)}"
-        else if (bytesDone > 0L) parts += humanSize(bytesDone)
-        if (!stalled && speed > 0L) parts += "${humanSize(speed)}/с"
-        if (!stalled && etaMs >= 0L && speed > 0L) parts += etaText(etaMs)
+        when {
+            phase == "verify" && fileVerifyTotal > 0L -> parts += "${humanSize(fileVerifyDone)} из ${humanSize(fileVerifyTotal)}"
+            phase == "verify" && verifyDone > 0L -> parts += humanSize(verifyDone)
+            bytesTotal > 0L -> parts += "${humanSize(bytesDone)} из ${humanSize(bytesTotal)}"
+            bytesDone > 0L -> parts += humanSize(bytesDone)
+        }
+        if (!stalled && phase != "sync" && phase != "prepare" && speed > 0L) parts += "${humanSize(speed)}/с"
+        val eta = if (phase == "verify") fileEtaMs else etaMs
+        if (!stalled && phase != "sync" && phase != "prepare" && eta >= 0L && speed > 0L) parts += etaText(eta)
+        if (phase == "sync" || phase == "prepare") parts += "$phaseSec с"
         if (stalled) parts += "нет новых данных $stallSec с"
+        if (longStall) parts += HINT
         return parts.joinToString(" · ").ifEmpty { "Подготовка…" }
     }
     fun sub(): String {
-        val parts = ArrayList<String>(3)
+        val parts = ArrayList<String>(4)
         if (fileCount > 0 && fileIndex > 0) parts += "файл $fileIndex из $fileCount"
+        if (phase == "verify" && verifyPlanned > 0L) {
+            parts += "всего ${humanSize(verifyDone)} из ${humanSize(verifyPlanned)}"
+            if (!stalled && etaMs >= 0L && speed > 0L) parts += etaText(etaMs)
+            if (overallPercent >= 0) parts += "общая $overallPercent%"
+        }
         if (stalled) parts += "передача остановилась"
-        else if (phase == "verify") parts += "сверка содержимого"
+        if (longStall) parts += HINT
         return parts.joinToString(" · ")
     }
     fun chip(): String = when {
@@ -175,16 +270,18 @@ data class TransferSnap(
         percent >= 0 -> "$percent%"
         else -> "…"
     }.take(7)
-    /** 0..1000 for the system progress bar. Full while the bytes are written and the hash is still running. */
+    /** 0..1000. During verification this is the current file, so the bar moves instead of sitting full. */
     fun bar(): Int = when {
-        indeterminate || bytesTotal <= 0L -> 0
+        indeterminate -> 0
+        phase == "verify" && percent >= 0 -> (percent.toLong() * BAR / 100).toInt().coerceIn(0, BAR)
+        bytesTotal <= 0L -> 0
         else -> ((bytesDone.coerceAtMost(bytesTotal).toDouble() / bytesTotal.toDouble()) * BAR).toInt().coerceIn(0, BAR)
     }
     fun toData(): Data = workDataOf(
         "file" to fileName.take(150),
         "title" to title().take(80),
         "line" to line().take(180),
-        "sub" to sub().take(120),
+        "sub" to sub().take(220),
         "text" to listOf(title(), line()).filter { it.isNotEmpty() }.joinToString(" · ").take(200),
         "bytes" to bytesDone,
         "total" to bytesTotal,
@@ -212,6 +309,7 @@ data class TransferSnap(
             "rename" -> "Переименование"
             else -> "Операция"
         }
+        const val HINT = "Накопитель не отвечает — проверь кабель/питание"
         fun etaText(ms: Long): String {
             val s = (ms / 1000).coerceAtLeast(1)
             return when {
@@ -243,6 +341,11 @@ class TransferNotifier(private val context: Context, workId: UUID) {
     fun foreground(snap: TransferSnap): ForegroundInfo {
         ensureChannel()
         return ForegroundInfo(notificationId, build(snap, ongoing = true), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+    }
+    /** Shade update that does not go through WorkManager, so a blocked fsync cannot freeze it. */
+    fun update(snap: TransferSnap) {
+        ensureChannel()
+        nm.notify(notificationId, build(snap, ongoing = true))
     }
     fun finish(outcome: String, detail: String) {
         ensureChannel()

@@ -18,9 +18,13 @@ class Archives(private val engine: FileEngine) {
             // close() must not drop the fd before the central directory is synced.
             val shield=object:java.io.FilterOutputStream(raw){override fun close(){flush()}}
             ZipOutputStream(shield).use { zip ->
-                fun push(pending: Int) {
-                    if(pending<=0)return
-                    zip.flush(); TransferCopy.sync(raw); engine.reportBytes(pending.toLong())
+                var sinceSync=0L
+                fun maybeSync(force: Boolean) {
+                    if(!force && sinceSync<TransferCopy.SYNC_EVERY)return
+                    engine.reportPhase("sync")
+                    zip.flush(); TransferCopy.sync(raw)
+                    sinceSync=0
+                    engine.reportPhase("write")
                 }
                 fun add(ref: String, path: String, depth: Int) {
                     engine.checkpoint(); require(depth<128)
@@ -29,13 +33,14 @@ class Archives(private val engine: FileEngine) {
                     if(!e.directory) {
                         engine.reportFile(e.name)
                         s.input(ref).use { input ->
-                            val buf=ByteArray(TransferCopy.CHUNK); var pending=0
+                            val buf=ByteArray(TransferCopy.BUFFER)
                             while(true) {
                                 engine.checkpoint(); val n=input.read(buf); if(n<0)break
-                                zip.write(buf,0,n); pending+=n
-                                if(pending>=TransferCopy.CHUNK) { push(pending); pending=0 }
+                                zip.write(buf,0,n)
+                                engine.reportBytes(n.toLong())
+                                sinceSync+=n
+                                maybeSync(false)
                             }
-                            push(pending)
                         }
                     } else engine.progress(e.name)
                     zip.closeEntry()
@@ -43,6 +48,7 @@ class Archives(private val engine: FileEngine) {
                 }
                 val names=HashSet<String>()
                 refs.forEach { val e=s.stat(it); val n=Names.unique(e.name) { candidate->candidate in names }; names+=n;add(it,n,0) }
+                maybeSync(true)
             }
             TransferCopy.sync(raw)
             } finally { runCatching { raw.close() } }
@@ -72,13 +78,15 @@ class Archives(private val engine: FileEngine) {
                 } else {
                     engine.reportFile(parts.last())
                     val target=s.create(dir,parts.last(),false)
-                    s.output(target).use { out -> val buf=ByteArray(TransferCopy.CHUNK); var pending=0
+                    s.output(target).use { out -> val buf=ByteArray(TransferCopy.BUFFER); var since=0L
                         while(true) { engine.checkpoint(); val n=zip.read(buf);if(n<0)break;total+=n
                             require(total <= 512L*1024*1024*1024) { "Архив превышает безопасный предел 512 ГБ" }
-                            out.write(buf,0,n); pending+=n
-                            if(pending>=TransferCopy.CHUNK) { TransferCopy.sync(out); engine.reportBytes(pending.toLong()); pending=0 }
+                            out.write(buf,0,n)
+                            engine.reportBytes(n.toLong())
+                            since+=n
+                            if(since>=TransferCopy.SYNC_EVERY) { engine.reportPhase("sync"); TransferCopy.sync(out); since=0; engine.reportPhase("write") }
                         }
-                        if(pending>0) { TransferCopy.sync(out); engine.reportBytes(pending.toLong()) }
+                        engine.reportPhase("sync"); TransferCopy.sync(out)
                     }
                     s.scan(target)
                 }

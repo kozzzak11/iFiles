@@ -67,41 +67,43 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
             tracker.setKind(kind)
             notifier=TransferNotifier(applicationContext,id)
             val notes=notifier
-            fun publish() {
-                if(!alive.get())return
-                val snap=tracker.snapshot()
-                if(!alive.get())return
-                runCatching { setForegroundAsync(notes.foreground(snap)) }
-                if(alive.get())setProgressAsync(snap.toData())
-            }
+            val gate=NotifyGate()
             setForeground(notes.foreground(tracker.snapshot()))
             s.atomic(started,JSONObject().put("state","started"))
             setProgressAsync(tracker.snapshot().toData())
+            // Own thread: not Dispatchers.IO, and it never waits on setForeground/fsync.
+            val ticker=Thread({
+                while(alive.get() && !Thread.currentThread().isInterrupted) {
+                    try {
+                        val snap=tracker.snapshot()
+                        val key=snap.phase+"|"+snap.percent+"|"+snap.bar()+"|"+snap.title()+"|"+snap.line()+"|"+snap.sub()
+                        if(alive.get() && gate.allow(key)) {
+                            notes.update(snap)
+                            setProgressAsync(snap.toData())
+                        }
+                    } catch(_: Throwable) {}
+                    try { Thread.sleep(250) } catch(_: InterruptedException) { break }
+                }
+            }, "ifiles-transfer-ui")
+            ticker.isDaemon=true
+            ticker.start()
             val engine=FileEngine(s,stop,
                 onBytes={ tracker.addBytes(it) },
                 onFile={ tracker.startFile(it) },
                 onPhase={ tracker.phase(it) },
                 onMeasured={ bytes,files -> tracker.setTotal(bytes,files) },
+                onVerifyBytes={ tracker.addVerified(it) },
+                onVerifyFile={ name,size -> tracker.startVerify(name, size) },
                 progress={ tracker.touchName(it) }
             )
             val array=r.getJSONArray("refs");val refs=(0 until array.length()).map { array.getString(it) }
             val parent=r.getString("parent")
-            coroutineScope {
-                // Keeps the shade moving even while a write or fsync is blocked on a slow USB port.
-                val ticker=launch(Dispatchers.Default) {
-                    while(isActive) {
-                        delay(500)
-                        runCatching { publish() }
-                    }
-                }
-                try {
+            try {
                     if(kind in setOf("copy","move","trash","zip")) {
                         tracker.phase("prepare")
-                        publish()
                         val measured=engine.tally(refs)
                         tracker.setTotal(measured.first, measured.second)
                         tracker.phase("write")
-                        publish()
                     }
                     when(kind) {
                         "copy" -> refs.forEach { engine.copy(it,parent) }
@@ -115,7 +117,10 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
                         "purge" -> engine.purgeMany(refs)
                         else -> error("Неизвестная операция")
                     }
-                } finally { alive.set(false); ticker.cancel() }
+            } finally {
+                alive.set(false)
+                ticker.interrupt()
+                runCatching { ticker.join(1000) }
             }
             Operations.clean(applicationContext,id)
             val done=tracker.snapshot()
