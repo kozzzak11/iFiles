@@ -98,14 +98,7 @@ class SearchAndHandlerTest {
             ContentIndex.get(context).forget(s.local)
             device.openNotification(); device.wait(Until.hasObject(By.res("com.android.systemui","notification_stack_scroller")),3000)
             Indexing.enqueue(context,listOf(s.local))
-            // Android 16 can tuck a low-importance ongoing notification under the fold of the shade.
-            val noteDeadline=System.currentTimeMillis()+30000
-            var note: UiObject2?=null
-            while(System.currentTimeMillis()<noteDeadline && note==null) {
-                note=device.wait(Until.findObject(By.text("Индексация для поиска")),1000)
-                if(note==null)device.swipe(device.displayWidth/2,(device.displayHeight*0.8f).toInt(),device.displayWidth/2,(device.displayHeight*0.35f).toInt(),20)
-            }
-            assertNotNull("Missing \"Индексация для поиска\"",note)
+            find("Индексация для поиска",30000)
             quickShot("search-03-index-notification")
             device.pressBack(); device.wait(Until.gone(By.text("Индексация для поиска")),3000)
             waitIndexed()

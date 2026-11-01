@@ -99,8 +99,8 @@ class FolderPreviewTest {
                 SystemClock.sleep(100)
             }
             assertTrue("Wide sheet should initially fit (zoom=$initial)",initial in 0.01f..0.8f)
-            // The scale readout is also the text "100%" until layout, so only the button is clickable.
-            val hundred=device.wait(Until.findObject(By.text("100%").clickable(true)),10000)
+            // The scale readout is also the text "100%" until layout. The button has its own description.
+            val hundred=device.wait(Until.findObject(By.desc("Масштаб 100%")),10000)
             assertNotNull("100% button",hundred)
             hundred.click()
             val zoomDeadline=SystemClock.elapsedRealtime()+20000
