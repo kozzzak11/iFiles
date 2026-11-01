@@ -120,7 +120,7 @@ class SearchAndHandlerTest {
             }
             quickShot("search-03-index-notification")
             shell("cmd statusbar collapse")
-            device.pressBack(); device.wait(Until.gone(By.textContains("Индексация для поиска")),3000)
+            device.wait(Until.gone(By.textContains("Индексация для поиска")),3000)
             waitIndexed()
             val index=ContentIndex.get(context)
             assertEquals(6004L,index.count(s.local))
