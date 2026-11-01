@@ -13,21 +13,39 @@ class Archives(private val engine: FileEngine) {
         val out=s.create(parent,s.unique(parent,name),false,"application/zip")
         var completed=false
         try {
-            ZipOutputStream(s.output(out).buffered()).use { zip ->
+            val raw=s.output(out)
+            try {
+            // close() must not drop the fd before the central directory is synced.
+            val shield=object:java.io.FilterOutputStream(raw){override fun close(){flush()}}
+            ZipOutputStream(shield).use { zip ->
+                fun push(pending: Int) {
+                    if(pending<=0)return
+                    zip.flush(); TransferCopy.sync(raw); engine.reportBytes(pending.toLong())
+                }
                 fun add(ref: String, path: String, depth: Int) {
                     engine.checkpoint(); require(depth<128)
-                    val e=s.stat(ref); Names.zipParts(path); engine.progress(e.name)
+                    val e=s.stat(ref); Names.zipParts(path)
                     zip.putNextEntry(ZipEntry(if(e.directory) "$path/" else path))
-                    if(!e.directory) s.input(ref).use { input ->
-                        val buf=ByteArray(256*1024)
-                        while(true) { engine.checkpoint(); val n=input.read(buf); if(n<0)break;zip.write(buf,0,n) }
-                    }
+                    if(!e.directory) {
+                        engine.reportFile(e.name)
+                        s.input(ref).use { input ->
+                            val buf=ByteArray(TransferCopy.CHUNK); var pending=0
+                            while(true) {
+                                engine.checkpoint(); val n=input.read(buf); if(n<0)break
+                                zip.write(buf,0,n); pending+=n
+                                if(pending>=TransferCopy.CHUNK) { push(pending); pending=0 }
+                            }
+                            push(pending)
+                        }
+                    } else engine.progress(e.name)
                     zip.closeEntry()
                     if(e.directory) s.list(ref).forEach { add(it.ref,"$path/${it.name}",depth+1) }
                 }
                 val names=HashSet<String>()
                 refs.forEach { val e=s.stat(it); val n=Names.unique(e.name) { candidate->candidate in names }; names+=n;add(it,n,0) }
             }
+            TransferCopy.sync(raw)
+            } finally { runCatching { raw.close() } }
             // Fully read back CRCs before reporting success.
             ZipInputStream(s.input(out).buffered()).use { z -> val buf=ByteArray(256*1024);while(z.nextEntry!=null) { while(true) { engine.checkpoint();if(z.read(buf)<0)break };z.closeEntry() } }
             completed=true; s.scan(out)
@@ -52,13 +70,15 @@ class Archives(private val engine: FileEngine) {
                 if(item.isDirectory) {
                     if(key !in dirs) dirs[key]=s.create(dir,parts.last(),true)
                 } else {
-                    engine.progress(key)
+                    engine.reportFile(parts.last())
                     val target=s.create(dir,parts.last(),false)
-                    s.output(target).use { out -> val buf=ByteArray(256*1024)
+                    s.output(target).use { out -> val buf=ByteArray(TransferCopy.CHUNK); var pending=0
                         while(true) { engine.checkpoint(); val n=zip.read(buf);if(n<0)break;total+=n
                             require(total <= 512L*1024*1024*1024) { "Архив превышает безопасный предел 512 ГБ" }
-                            out.write(buf,0,n)
+                            out.write(buf,0,n); pending+=n
+                            if(pending>=TransferCopy.CHUNK) { TransferCopy.sync(out); engine.reportBytes(pending.toLong()); pending=0 }
                         }
+                        if(pending>0) { TransferCopy.sync(out); engine.reportBytes(pending.toLong()) }
                     }
                     s.scan(target)
                 }

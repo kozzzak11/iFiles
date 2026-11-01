@@ -84,16 +84,34 @@ class FolderPreviewTest {
         ActivityScenario.launch<MediaActivity>(MediaActivity.intent(context,sheet)).use { scenario->
             assertTrue(device.wait(Until.hasObject(By.text("Column 0 content")),15000))
             device.waitForIdle()
+            // Overview scale settles after the first layout. Sampling too early makes the 1.5x check depend on timing.
             var initial=0f
-            scenario.onActivity { activity->initial=findWeb(activity.window.decorView)!!.actualZoom();assertTrue("Wide sheet should initially fit",initial<0.8f) }
-            device.findObject(By.text("100%")).click()
-            val zoomDeadline=SystemClock.elapsedRealtime()+15000
-            var zoomed=false
-            while(SystemClock.elapsedRealtime()<zoomDeadline && !zoomed) {
-                scenario.onActivity { activity->val web=findWeb(activity.window.decorView)!!;zoomed=web.actualZoom()>initial*1.5f && web.canScrollHorizontally(1) }
-                if(!zoomed)SystemClock.sleep(100)
+            val settle=SystemClock.elapsedRealtime()+8000
+            var previous=-1f
+            var held=0L
+            while(SystemClock.elapsedRealtime()<settle) {
+                scenario.onActivity { activity->initial=findWeb(activity.window.decorView)!!.actualZoom() }
+                if(initial>0f && initial<0.8f && kotlin.math.abs(initial-previous)<0.02f) {
+                    if(held==0L)held=SystemClock.elapsedRealtime()
+                    if(SystemClock.elapsedRealtime()-held>500)break
+                } else held=0L
+                previous=initial
+                SystemClock.sleep(100)
             }
-            assertTrue("100% must enlarge the sheet and allow panning",zoomed)
+            assertTrue("Wide sheet should initially fit (zoom=$initial)",initial in 0.01f..0.8f)
+            // The scale readout is also the text "100%" until layout. The button has its own description.
+            val hundred=device.wait(Until.findObject(By.desc("Масштаб 100%")),10000)
+            assertNotNull("100% button",hundred)
+            hundred.click()
+            val zoomDeadline=SystemClock.elapsedRealtime()+20000
+            var zoomed=false
+            var seen=initial
+            var scroll=false
+            while(SystemClock.elapsedRealtime()<zoomDeadline && !zoomed) {
+                scenario.onActivity { activity->val web=findWeb(activity.window.decorView)!!;seen=web.actualZoom();scroll=web.canScrollHorizontally(1);zoomed=seen>initial*1.5f && scroll }
+                if(!zoomed)SystemClock.sleep(150)
+            }
+            assertTrue("100% must enlarge the sheet and allow panning (initial=$initial zoom=$seen scroll=$scroll)",zoomed)
             device.findObject(By.text("По ширине")).click()
             val fitDeadline=SystemClock.elapsedRealtime()+15000
             var fitted=false

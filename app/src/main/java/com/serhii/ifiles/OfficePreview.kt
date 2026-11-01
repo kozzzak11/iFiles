@@ -9,6 +9,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlin.math.roundToInt
 
@@ -51,7 +53,7 @@ class OfficeWebView(context:Context):WebView(context) {
             TextButton(onClick={web?.zoomBy(0.8f)}){Text("−")}
             Text("${(zoom*100).roundToInt()}%")
             TextButton(onClick={web?.zoomBy(1.25f)}){Text("+")}
-            TextButton(onClick={web?.let{it.zoomBy((1f/it.actualZoom()).coerceIn(0.01f,100f))}}){Text("100%")}
+            TextButton(onClick={web?.let{it.zoomBy((1f/it.actualZoom()).coerceIn(0.01f,100f))}},modifier=Modifier.semantics{contentDescription="Масштаб 100%"}){Text("100%")}
         }
         AndroidView(factory={ctx->OfficeWebView(ctx).apply {
             web=this

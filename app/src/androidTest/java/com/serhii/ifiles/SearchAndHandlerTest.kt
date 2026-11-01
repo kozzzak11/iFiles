@@ -94,13 +94,35 @@ class SearchAndHandlerTest {
             desc("Индексация",30000)
             shot("search-02-index-progress")
             waitIndexed()
-            // Second full pass (index cleared) with the notification shade open.
+            // Post the foreground notification first. Opening the shade beforehand often misses it on Android 16.
             ContentIndex.get(context).forget(s.local)
-            device.openNotification(); device.wait(Until.hasObject(By.res("com.android.systemui","notification_stack_scroller")),3000)
+            val nm=context.getSystemService(android.app.NotificationManager::class.java)
+            // A finished file operation from an earlier test stays in the shade and can hide this title.
+            nm.cancelAll()
             Indexing.enqueue(context,listOf(s.local))
-            find("Индексация для поиска",20000)
+            val postedBy=System.currentTimeMillis()+20000
+            var titles=""
+            while(System.currentTimeMillis()<postedBy) {
+                titles=nm.activeNotifications.joinToString{ it.notification.extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString() ?: "" }
+                if(titles.contains("Индексация для поиска"))break
+                Thread.sleep(200)
+            }
+            assertTrue("Indexing notification was not posted: [$titles]",titles.contains("Индексация для поиска"))
+            // Swiping the status bar on Android 16 can land in notification settings. Expand the list directly.
+            fun reveal(): androidx.test.uiautomator.UiObject2? {
+                shell("cmd statusbar collapse"); Thread.sleep(300)
+                shell("cmd statusbar expand-notifications"); Thread.sleep(800)
+                return device.wait(Until.findObject(By.textContains("Индексация для поиска")),8000)
+            }
+            var shown=reveal()
+            if(shown==null) shown=reveal()
+            if(shown==null) {
+                val visible=device.findObjects(By.enabled(true)).mapNotNull{it.text?.takeIf{t->t.isNotBlank()}}.distinct().take(30).joinToString(" | ")
+                fail("Shade did not show the indexing notification. Posted: [$titles]. Visible: [$visible]")
+            }
             quickShot("search-03-index-notification")
-            device.pressBack(); device.wait(Until.gone(By.text("Индексация для поиска")),3000)
+            shell("cmd statusbar collapse")
+            device.wait(Until.gone(By.textContains("Индексация для поиска")),3000)
             waitIndexed()
             val index=ContentIndex.get(context)
             assertEquals(6004L,index.count(s.local))
