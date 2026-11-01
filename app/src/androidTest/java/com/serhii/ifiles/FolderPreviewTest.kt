@@ -86,10 +86,15 @@ class FolderPreviewTest {
             device.waitForIdle()
             var initial=0f
             scenario.onActivity { activity->initial=findWeb(activity.window.decorView)!!.actualZoom();assertTrue("Wide sheet should initially fit",initial<0.8f) }
-            device.findObject(By.text("100%")).click()
+            // The scale readout is also "100%" until the first layout, so a plain text lookup can tap the label.
             val zoomDeadline=SystemClock.elapsedRealtime()+15000
             var zoomed=false
+            var nextClick=0L
             while(SystemClock.elapsedRealtime()<zoomDeadline && !zoomed) {
+                if(SystemClock.elapsedRealtime()>=nextClick) {
+                    device.findObject(By.text("100%").clickable(true))?.click()
+                    nextClick=SystemClock.elapsedRealtime()+2000
+                }
                 scenario.onActivity { activity->val web=findWeb(activity.window.decorView)!!;zoomed=web.actualZoom()>initial*1.5f && web.canScrollHorizontally(1) }
                 if(!zoomed)SystemClock.sleep(100)
             }
