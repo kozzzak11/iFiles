@@ -326,12 +326,15 @@ class FileEngine(
     private val onFile: (String) -> Unit = {},
     private val onPhase: (String) -> Unit = {},
     private val onMeasured: (Long, Int) -> Unit = { _, _ -> },
+    private val onVerifyBytes: (Long) -> Unit = {},
+    private val onVerifyFile: (String, Long) -> Unit = { _, _ -> },
     val progress: (String) -> Unit = {}
 ) {
     companion object { const val TRASH_DAYS=30L }
     fun checkpoint() { if(stopped()) throw InterruptedIOException("Операция прервана; исходные файлы сохранены") }
     fun reportBytes(n: Long) { if(n>0) onBytes(n) }
     fun reportFile(name: String) { progress(name); onFile(name) }
+    fun reportPhase(value: String) { onPhase(value) }
     /** Bytes and file count of [refs], including everything inside folders. */
     fun tally(refs: List<String>): Pair<Long,Int> {
         var bytes=0L; var files=0
@@ -345,19 +348,56 @@ class FileEngine(
         return bytes to files
     }
     fun digest(ref: String): Pair<Long,String> {
+        val entry=runCatching { s.stat(ref) }.getOrNull()
+        onVerifyFile(entry?.name ?: "", entry?.size?.coerceAtLeast(0) ?: 0L)
         onPhase("verify")
         return s.input(ref).use { input ->
-            val md=MessageDigest.getInstance("SHA-256"); val buf=ByteArray(256*1024); var size=0L
-            while(true) { checkpoint(); val n=input.read(buf); if(n<0)break; md.update(buf,0,n); size+=n }
+            val md=MessageDigest.getInstance("SHA-256"); val buf=ByteArray(TransferCopy.BUFFER); var size=0L
+            while(true) {
+                checkpoint()
+                val n=input.read(buf)
+                if(n<0)break
+                md.update(buf,0,n)
+                size+=n
+                if(n>0) onVerifyBytes(n.toLong())
+            }
             size to md.digest().joinToString("") { "%02x".format(it) }
         }
     }
     fun transfer(source: String, dest: String) {
         onPhase("write")
-        s.input(source).use { input -> s.output(dest).use { out ->
-            TransferCopy.pump(input, out, { checkpoint() }, { reportBytes(it) })
+        if(s.isFile(source) && s.isFile(dest)) transferLocal(s.file(source), s.file(dest))
+        else s.input(source).use { input -> s.output(dest).use { out ->
+            TransferCopy.pump(input, out, { checkpoint() }, { reportBytes(it) }, { onPhase("sync") })
+            onPhase("write")
         } }
         check(digest(source)==digest(dest)) { "Проверка копии не пройдена; исходник сохранён" }
+    }
+    /** Kernel copy for two real files, in large slices, with fsync only every 64 MB and at the end. */
+    private fun transferLocal(src: File, dst: File) {
+        java.io.FileInputStream(src).channel.use { incoming ->
+            java.io.FileOutputStream(dst).channel.use { outgoing ->
+                var pos=0L
+                val size=incoming.size()
+                var since=0L
+                while(pos<size) {
+                    checkpoint()
+                    val n=incoming.transferTo(pos, TransferCopy.BUFFER.toLong(), outgoing)
+                    if(n<=0) break
+                    pos+=n
+                    since+=n
+                    reportBytes(n)
+                    if(since>=TransferCopy.SYNC_EVERY) {
+                        onPhase("sync")
+                        outgoing.force(false)
+                        since=0
+                        onPhase("write")
+                    }
+                }
+                onPhase("sync")
+                outgoing.force(false)
+            }
+        }
     }
     fun assertOutside(source: String, dest: String) {
         val physicalSource=s.physical(source);val physicalDest=s.physical(dest)

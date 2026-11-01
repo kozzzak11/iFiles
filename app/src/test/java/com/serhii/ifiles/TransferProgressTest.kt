@@ -16,18 +16,30 @@ import java.util.UUID
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class TransferProgressTest {
-    @Test fun pumpSyncsEachChunkBeforeCountingIt() {
-        val size = TransferCopy.CHUNK + 10
+    @Test fun pumpCountsBytesBeforeARareSync() {
+        val data = ByteArray(250) { 1 }
+        val input = object : java.io.InputStream() {
+            var pos = 0
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (pos >= data.size) return -1
+                val n = minOf(40, data.size - pos, len)
+                System.arraycopy(data, pos, b, off, n)
+                pos += n
+                return n
+            }
+            override fun read(): Int = throw UnsupportedOperationException()
+        }
         val order = ArrayList<String>()
         var reported = 0L
-        TransferCopy.pump(ByteArrayInputStream(ByteArray(size)), ByteArrayOutputStream(), {}, {
+        TransferCopy.pump(input, ByteArrayOutputStream(), {}, {
             reported += it
-            order += "bytes:$it"
-        }, {
-            order += "sync"
-        })
-        assertEquals(size.toLong(), reported)
-        assertEquals(listOf("sync", "bytes:${TransferCopy.CHUNK}", "sync", "bytes:10"), order)
+            order += "b"
+        }, { order += "sync" }, { order += "fsync" }, syncEvery = 100)
+        assertEquals(250L, reported)
+        assertEquals(7, order.count { it == "b" })
+        // 100-byte boundaries plus the final sync, not once per 40-byte read.
+        assertEquals(3, order.count { it == "fsync" })
+        assertTrue(order.indexOf("b") < order.indexOf("sync"))
     }
 
     @Test fun copyReportsEveryWrittenByteIncludingNestedFiles() {
@@ -37,20 +49,22 @@ class TransferProgressTest {
             val folder = File(root, "Folder").apply { mkdirs() }
             File(folder, "a.bin").writeBytes(ByteArray(10) { 1 })
             val sub = File(folder, "sub").apply { mkdirs() }
-            File(sub, "b.bin").writeBytes(ByteArray(TransferCopy.CHUNK + 20) { 2 })
+            File(sub, "b.bin").writeBytes(ByteArray(300_000) { 2 })
             val engine = FileEngine(s)
             val (bytes, files) = engine.tally(listOf(folder.toURI().toString()))
-            assertEquals(10L + TransferCopy.CHUNK + 20, bytes)
+            assertEquals(10L + 300_000, bytes)
             assertEquals(2, files)
             var got = 0L
-            var calls = 0
-            val copying = FileEngine(s, onBytes = { got += it; calls++ })
+            var verified = 0L
+            var syncs = 0
+            val copying = FileEngine(s, onBytes = { got += it }, onPhase = { if (it == "sync") syncs++ }, onVerifyBytes = { verified += it })
             val dest = File(root, "dest").apply { mkdirs() }
             copying.copy(folder.toURI().toString(), dest.toURI().toString())
             assertEquals(bytes, got)
-            assertTrue(calls >= 2)
+            assertEquals(bytes * 2, verified)
+            assertTrue(syncs in 1..4)
             assertEquals(10L, File(dest, "Folder/a.bin").length())
-            assertEquals(TransferCopy.CHUNK + 20L, File(dest, "Folder/sub/b.bin").length())
+            assertEquals(300_000L, File(dest, "Folder/sub/b.bin").length())
         } finally { root.deleteRecursively() }
     }
 
@@ -76,9 +90,39 @@ class TransferProgressTest {
         assertTrue(stuck.sub().contains("файл 1 из 2"))
         assertTrue(stuck.sub().contains("передача остановилась"))
         assertEquals(0, stuck.speed)
-        t.phase("verify", now = 20_000)
-        assertFalse(t.snapshot(40_000).stalled)
-        assertEquals("Проверка копии", t.snapshot(40_000).title())
+        val quiet = t.snapshot(1_000 + 120_000)
+        assertTrue(quiet.longStall)
+        assertTrue(quiet.line().contains(TransferSnap.HINT))
+        t.phase("verify", now = 200_000)
+        assertFalse(t.snapshot(205_000).stalled)
+    }
+
+    @Test fun verifyPhaseHasItsOwnPercentSpeedAndEta() {
+        val t = TransferTracker()
+        t.setKind("copy")
+        t.setTotal(1_000, 1)
+        t.phase("write", now = 0)
+        t.addBytes(1_000, now = 1_000)
+        t.startVerify("show.mkv", 1_000, now = 2_000)
+        t.addVerified(250, now = 3_000)
+        val snap = t.snapshot(3_000)
+        assertEquals("verify", snap.phase)
+        assertEquals(25, snap.percent)
+        assertEquals(250, snap.speed)
+        assertEquals(3_000, snap.fileEtaMs)
+        assertTrue(snap.title().startsWith("Проверка копии 25%"))
+        assertTrue(snap.line().contains("из"))
+        assertTrue(snap.sub().contains("всего"))
+        assertEquals(2_000, snap.verifyPlanned)
+    }
+
+    @Test fun notifyGateSkipsRepeatsAndPostsAtMostOnceASecond() {
+        val gate = NotifyGate(1000)
+        assertTrue(gate.allow("a", 0))
+        assertFalse(gate.allow("a", 500))
+        assertFalse(gate.allow("b", 500))
+        assertTrue(gate.allow("b", 1000))
+        assertFalse(gate.allow("b", 2500))
     }
 
     @Test fun speedAndEtaUseTheRecentWindow() {
