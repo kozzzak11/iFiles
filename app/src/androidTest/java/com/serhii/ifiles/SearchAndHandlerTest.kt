@@ -96,8 +96,10 @@ class SearchAndHandlerTest {
             waitIndexed()
             // Post the foreground notification first. Opening the shade beforehand often misses it on Android 16.
             ContentIndex.get(context).forget(s.local)
-            Indexing.enqueue(context,listOf(s.local))
             val nm=context.getSystemService(android.app.NotificationManager::class.java)
+            // A finished file operation from an earlier test stays in the shade and can hide this title.
+            nm.cancelAll()
+            Indexing.enqueue(context,listOf(s.local))
             val postedBy=System.currentTimeMillis()+20000
             var titles=""
             while(System.currentTimeMillis()<postedBy) {
