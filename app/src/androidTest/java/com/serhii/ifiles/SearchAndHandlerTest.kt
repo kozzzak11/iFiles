@@ -94,11 +94,23 @@ class SearchAndHandlerTest {
             desc("Индексация",30000)
             shot("search-02-index-progress")
             waitIndexed()
-            // Second full pass (index cleared) with the notification shade open.
+            // Post the foreground notification first. Opening the shade beforehand often misses it on Android 16.
             ContentIndex.get(context).forget(s.local)
-            device.openNotification(); device.wait(Until.hasObject(By.res("com.android.systemui","notification_stack_scroller")),3000)
             Indexing.enqueue(context,listOf(s.local))
-            find("Индексация для поиска",30000)
+            val nm=context.getSystemService(android.app.NotificationManager::class.java)
+            val postedBy=System.currentTimeMillis()+20000
+            var titles=""
+            while(System.currentTimeMillis()<postedBy) {
+                titles=nm.activeNotifications.joinToString{ it.notification.extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString() ?: "" }
+                if(titles.contains("Индексация для поиска"))break
+                Thread.sleep(200)
+            }
+            assertTrue("Indexing notification was not posted: [$titles]",titles.contains("Индексация для поиска"))
+            device.openNotification(); device.wait(Until.hasObject(By.res("com.android.systemui","notification_stack_scroller")),3000)
+            if(device.wait(Until.findObject(By.textContains("Индексация для поиска")),8000)==null) {
+                device.pressBack(); Thread.sleep(400); device.openNotification()
+            }
+            find("Индексация для поиска",15000)
             quickShot("search-03-index-notification")
             device.pressBack(); device.wait(Until.gone(By.text("Индексация для поиска")),3000)
             waitIndexed()
