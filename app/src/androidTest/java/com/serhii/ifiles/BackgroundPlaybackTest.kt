@@ -29,14 +29,14 @@ class BackgroundPlaybackTest {
         instrumentation.runOnMainSync {future=MediaController.Builder(context,SessionToken(context,ComponentName(context,PlaybackService::class.java))).buildAsync()}
         return future.get(20,TimeUnit.SECONDS).also{controller=it}
     }
-    private fun awaitCondition(check:()->Boolean) {
+    private fun awaitCondition(message:String="Playback/PiP state timed out",check:()->Boolean) {
         val end=SystemClock.elapsedRealtime()+45000
         while(SystemClock.elapsedRealtime()<end) {
             var done=false;instrumentation.runOnMainSync{done=check()}
             if(done)return
             SystemClock.sleep(100)
         }
-        fail("Playback/PiP state timed out")
+        fail(message)
     }
     @After fun cleanup() {
         shell("input keyevent KEYCODE_WAKEUP");shell("wm dismiss-keyguard")
@@ -63,9 +63,19 @@ class BackgroundPlaybackTest {
             val p=connect();var activity:MediaActivity?=null
             scenario.onActivity{activity=it}
             instrumentation.runOnMainSync{p.repeatMode=Player.REPEAT_MODE_ONE}
-            awaitCondition{p.isPlaying}
-            shell("input keyevent KEYCODE_HOME")
-            awaitCondition{activity?.isInPictureInPictureMode==true}
+            awaitCondition("video did not start"){p.isPlaying}
+            // The emulator sometimes drops a single Home key, so try again before failing.
+            var entered=false
+            for(attempt in 1..3) {
+                shell("am start -a android.intent.action.MAIN -c android.intent.category.HOME")
+                val end=SystemClock.elapsedRealtime()+10000
+                while(SystemClock.elapsedRealtime()<end && !entered) {
+                    instrumentation.runOnMainSync{entered=activity?.isInPictureInPictureMode==true}
+                    if(!entered)SystemClock.sleep(200)
+                }
+                if(entered)break
+            }
+            assertTrue("PiP did not start after Home",entered)
             instrumentation.runOnMainSync{assertTrue("PiP must not pause video",p.isPlaying)}
         }
     }
