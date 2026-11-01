@@ -61,7 +61,7 @@ class TransferProgressTest {
             val dest = File(root, "dest").apply { mkdirs() }
             copying.copy(folder.toURI().toString(), dest.toURI().toString())
             assertEquals(bytes, got)
-            assertEquals(bytes * 2, verified)
+            assertEquals(0L, verified)
             assertTrue(syncs in 1..4)
             assertEquals(10L, File(dest, "Folder/a.bin").length())
             assertEquals(300_000L, File(dest, "Folder/sub/b.bin").length())
@@ -82,13 +82,13 @@ class TransferProgressTest {
         assertEquals(1, moving.fileIndex)
         assertTrue(moving.speed > 0)
         assertTrue(moving.line().contains("из"))
-        assertTrue(moving.title().contains("25%"))
+        assertTrue(moving.title().contains("Копирование · 25%"))
+        assertTrue(moving.line().contains("осталось"))
         val stuck = t.snapshot(1_000 + TransferTracker.STALL_MS)
         assertTrue(stuck.stalled)
         assertEquals("Ожидание устройства…", stuck.title())
         assertTrue(stuck.line().contains("нет новых данных"))
-        assertTrue(stuck.sub().contains("файл 1 из 2"))
-        assertTrue(stuck.sub().contains("передача остановилась"))
+        assertEquals("video.mp4", stuck.sub())
         assertEquals(0, stuck.speed)
         val quiet = t.snapshot(1_000 + 120_000)
         assertTrue(quiet.longStall)
@@ -97,23 +97,70 @@ class TransferProgressTest {
         assertFalse(t.snapshot(205_000).stalled)
     }
 
-    @Test fun verifyPhaseHasItsOwnPercentSpeedAndEta() {
+    @Test fun manyFilesStayInsideTotalAndPercentOnlyRises() {
         val t = TransferTracker()
         t.setKind("copy")
-        t.setTotal(1_000, 1)
+        t.setTotal(1_000, 4)
         t.phase("write", now = 0)
-        t.addBytes(1_000, now = 1_000)
-        t.startVerify("show.mkv", 1_000, now = 2_000)
-        t.addVerified(250, now = 3_000)
-        val snap = t.snapshot(3_000)
-        assertEquals("verify", snap.phase)
-        assertEquals(25, snap.percent)
-        assertEquals(250, snap.speed)
-        assertEquals(3_000, snap.fileEtaMs)
-        assertTrue(snap.title().startsWith("Проверка копии 25%"))
-        assertTrue(snap.line().contains("из"))
-        assertTrue(snap.sub().contains("всего"))
-        assertEquals(2_000, snap.verifyPlanned)
+        var lastPercent = -1
+        var lastShown = -1L
+        var now = 0L
+        for (n in listOf(100L, 150L, 250L, 400L, 5_000L)) {
+            now += 1_000
+            t.startFile("f$n", now)
+            t.addBytes(n, now)
+            val snap = t.snapshot(now)
+            assertTrue(snap.bytesDone in 0..1_000)
+            assertTrue(snap.percent in 0..100)
+            assertTrue(snap.percent >= lastPercent)
+            assertTrue(snap.bytesDone >= lastShown)
+            assertFalse(snap.title().contains("Проверка"))
+            lastPercent = snap.percent
+            lastShown = snap.bytesDone
+        }
+        val done = t.snapshot(now)
+        assertEquals(1_000L, done.bytesDone)
+        assertEquals(100, done.percent)
+        assertEquals("Копирование · 100%", done.title())
+    }
+
+    @Test fun copyAndMoveDoNotRereadAndMoveDeletesOnlyAfterSizeMatch() {
+        val s = Storage(ApplicationProvider.getApplicationContext())
+        val root = File(s.context.cacheDir, "nomatch-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val folder = File(root, "In").apply { mkdirs() }
+            File(folder, "a.txt").writeText("alpha")
+            File(folder, "nested").mkdirs()
+            File(folder, "nested/b.txt").writeText("beta-beta")
+            var verified = 0L
+            val engine = FileEngine(s, onVerifyBytes = { verified += it })
+            val copied = engine.copy(folder.toURI().toString(), File(root, "out").apply { mkdirs() }.toURI().toString())
+            assertEquals(0L, verified)
+            assertTrue(engine.sizesMatch(folder.toURI().toString(), copied))
+            val bad = File(File(java.net.URI(copied)), "a.txt")
+            bad.writeText("x")
+            assertFalse(engine.sizesMatch(folder.toURI().toString(), copied))
+            val loose = File(root, "loose.txt").apply { writeText("move-me") }
+            val movedTo = File(root, "moved").apply { mkdirs() }
+            engine.move(loose.toURI().toString(), movedTo.toURI().toString())
+            assertFalse(loose.exists())
+            assertEquals("move-me", File(movedTo, "loose.txt").readText())
+            assertEquals(0L, verified)
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun cancelledCopyKeepsTheSource() {
+        val s = Storage(ApplicationProvider.getApplicationContext())
+        val root = File(s.context.cacheDir, "cancel-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val src = File(root, "big.bin").apply { writeBytes(ByteArray(200_000) { 3 }) }
+            val dest = File(root, "dest").apply { mkdirs() }
+            var n = 0
+            assertThrows(java.io.InterruptedIOException::class.java) {
+                FileEngine(s, { ++n > 1 }).copy(src.toURI().toString(), dest.toURI().toString())
+            }
+            assertEquals(200_000L, src.length())
+        } finally { root.deleteRecursively() }
     }
 
     @Test fun notifyGateSkipsRepeatsAndPostsAtMostOnceASecond() {
@@ -135,7 +182,8 @@ class TransferProgressTest {
         assertEquals(4_000, snap.etaMs)
         assertEquals(20, snap.percent)
         t.addBytes(800_000, now = 2_000)
-        assertEquals(99, t.snapshot(2_000).percent)
+        assertEquals(100, t.snapshot(2_000).percent)
+        assertEquals(1_000_000L, t.snapshot(2_000).bytesDone)
     }
 
     @Test fun notificationIsOngoingDeterminateAndCancellable() {

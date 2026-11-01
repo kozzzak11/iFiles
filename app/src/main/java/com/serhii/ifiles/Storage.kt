@@ -347,42 +347,36 @@ class FileEngine(
         refs.forEach { walk(it, 0) }
         return bytes to files
     }
-    fun digest(ref: String): Pair<Long,String> {
-        val entry=runCatching { s.stat(ref) }.getOrNull()
-        onVerifyFile(entry?.name ?: "", entry?.size?.coerceAtLeast(0) ?: 0L)
-        onPhase("verify")
-        return s.input(ref).use { input ->
-            val md=MessageDigest.getInstance("SHA-256"); val buf=ByteArray(TransferCopy.BUFFER); var size=0L
-            while(true) {
-                checkpoint()
-                val n=input.read(buf)
-                if(n<0)break
-                md.update(buf,0,n)
-                size+=n
-                if(n>0) onVerifyBytes(n.toLong())
-            }
-            size to md.digest().joinToString("") { "%02x".format(it) }
-        }
+    fun digest(ref: String): Pair<Long,String> = s.input(ref).use { input ->
+        val md=MessageDigest.getInstance("SHA-256"); val buf=ByteArray(TransferCopy.BUFFER); var size=0L
+        while(true) { checkpoint(); val n=input.read(buf); if(n<0)break; md.update(buf,0,n); size+=n }
+        size to md.digest().joinToString("") { "%02x".format(it) }
     }
+    /** Copy bytes and require the written count to equal the source size. No second read. */
     fun transfer(source: String, dest: String) {
         onPhase("write")
-        if(s.isFile(source) && s.isFile(dest)) transferLocal(s.file(source), s.file(dest))
-        else s.input(source).use { input -> s.output(dest).use { out ->
-            TransferCopy.pump(input, out, { checkpoint() }, { reportBytes(it) }, { onPhase("sync") })
+        val expected=runCatching { s.stat(source).size }.getOrDefault(-1L)
+        val written=if(s.isFile(source) && s.isFile(dest)) transferLocal(s.file(source), s.file(dest), expected)
+        else {
+            var count=0L
+            s.input(source).use { input -> s.output(dest).use { out ->
+                TransferCopy.pump(input, out, { checkpoint() }, { count+=it; reportBytes(it) }, { onPhase("sync") }, limit=expected)
+            } }
             onPhase("write")
-        } }
-        check(digest(source)==digest(dest)) { "Проверка копии не пройдена; исходник сохранён" }
+            count
+        }
+        if(expected>=0) check(written==expected) { "Скопировано $written из $expected байт; исходник сохранён" }
     }
     /** Kernel copy for two real files, in large slices, with fsync only every 64 MB and at the end. */
-    private fun transferLocal(src: File, dst: File) {
-        java.io.FileInputStream(src).channel.use { incoming ->
+    private fun transferLocal(src: File, dst: File, expected: Long): Long {
+        return java.io.FileInputStream(src).channel.use { incoming ->
             java.io.FileOutputStream(dst).channel.use { outgoing ->
                 var pos=0L
-                val size=incoming.size()
+                val size=if(expected>=0) expected else incoming.size()
                 var since=0L
                 while(pos<size) {
                     checkpoint()
-                    val n=incoming.transferTo(pos, TransferCopy.BUFFER.toLong(), outgoing)
+                    val n=incoming.transferTo(pos, minOf(TransferCopy.BUFFER.toLong(), size-pos), outgoing)
                     if(n<=0) break
                     pos+=n
                     since+=n
@@ -396,6 +390,7 @@ class FileEngine(
                 }
                 onPhase("sync")
                 outgoing.force(false)
+                pos
             }
         }
     }
@@ -459,13 +454,31 @@ class FileEngine(
         } else check(digest(source)==digest(copy)) { "Исходный файл изменился; он сохранён" }
         checkpoint(); s.delete(source); s.scan(source)
     }
+    /** Same names and byte sizes. Used after a copy so a move can delete the source without re-reading it. */
+    fun sizesMatch(source: String, copy: String, depth: Int = 0): Boolean {
+        checkpoint(); require(depth<128)
+        val a=s.stat(source); val b=s.stat(copy)
+        if(a.directory!=b.directory) return false
+        if(!a.directory) return a.size>=0 && a.size==b.size
+        val ac=s.list(source); val bc=s.list(copy).associateBy { it.name }
+        return ac.size==bc.size && ac.all { x -> bc[x.name]?.let { sizesMatch(x.ref, it.ref, depth+1) } == true }
+    }
+    private fun deleteTree(ref: String, depth: Int = 0) {
+        checkpoint(); require(depth<128)
+        val e=s.stat(ref)
+        if(e.directory) {
+            for(child in s.list(ref)) deleteTree(child.ref, depth+1)
+            check(s.list(ref).isEmpty()) { "Папка изменилась; исходник сохранён" }
+        }
+        checkpoint(); s.delete(ref); s.scan(ref)
+    }
     fun move(source: String, parent: String, sourceParent: String? = null) {
         assertOutside(source,parent)
         val renamed=runCatching { rename(source,parent,sourceParent) }.getOrNull()
         if(renamed!=null) { s.rewriteRef(source,renamed); return }
         val target=copy(source,parent)
-        check(equivalent(source,target)) { "Папка изменилась; исходник сохранён" }
-        removeVerified(source,target)
+        check(sizesMatch(source,target)) { "Размер копии не совпал; исходник сохранён" }
+        deleteTree(source)
     }
     /**
      * Same-storage move without copying: File.renameTo / DocumentsContract.moveDocument.

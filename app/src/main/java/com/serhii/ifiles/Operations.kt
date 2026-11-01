@@ -92,8 +92,6 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
                 onFile={ tracker.startFile(it) },
                 onPhase={ tracker.phase(it) },
                 onMeasured={ bytes,files -> tracker.setTotal(bytes,files) },
-                onVerifyBytes={ tracker.addVerified(it) },
-                onVerifyFile={ name,size -> tracker.startVerify(name, size) },
                 progress={ tracker.touchName(it) }
             )
             val array=r.getJSONArray("refs");val refs=(0 until array.length()).map { array.getString(it) }

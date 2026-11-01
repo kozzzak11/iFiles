@@ -388,7 +388,7 @@ private val Blue=Color(0xFF007AFF)
                 Text(title, Modifier.weight(1f), fontWeight=FontWeight.SemiBold, maxLines=1, overflow=TextOverflow.Ellipsis)
                 TextButton(onClick=onCancel){Text("Отменить")}
             }
-            if(percent>=0 && phase!="prepare" && !stalled) LinearProgressIndicator({percent/100f}, Modifier.fillMaxWidth())
+            if(percent>=0 && phase!="prepare") LinearProgressIndicator({percent/100f}, Modifier.fillMaxWidth())
             else LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(line, fontSize=12.sp, maxLines=2, overflow=TextOverflow.Ellipsis)
             if(sub.isNotEmpty() || queued>0) Text(listOf(sub, if(queued>0)"в очереди ещё $queued" else "").filter{it.isNotEmpty()}.joinToString(" · "), fontSize=12.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, maxLines=2, overflow=TextOverflow.Ellipsis)

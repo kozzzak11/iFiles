@@ -197,7 +197,7 @@ class MediaActivity:ComponentActivity() {
         val params=PictureInPictureParams.Builder().setAspectRatio(Rational((aspect*1000).toInt(),1000))
         if(Build.VERSION.SDK_INT>=31)params.setAutoEnterEnabled(canPip).setSeamlessResizeEnabled(true)
         pipParams=params.build()
-        if(packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE))setPictureInPictureParams(pipParams)
+        if(packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE))runCatching{setPictureInPictureParams(pipParams)}
     }
     fun enterPip() {
         if(!video || !packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE))return
