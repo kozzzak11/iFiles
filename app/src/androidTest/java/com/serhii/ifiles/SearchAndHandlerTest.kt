@@ -106,11 +106,19 @@ class SearchAndHandlerTest {
                 Thread.sleep(200)
             }
             assertTrue("Indexing notification was not posted: [$titles]",titles.contains("Индексация для поиска"))
-            device.openNotification(); device.wait(Until.hasObject(By.res("com.android.systemui","notification_stack_scroller")),3000)
-            if(device.wait(Until.findObject(By.textContains("Индексация для поиска")),8000)==null) {
-                device.pressBack(); Thread.sleep(400); device.openNotification()
+            fun reveal(): androidx.test.uiautomator.UiObject2? {
+                device.openNotification()
+                device.wait(Until.hasObject(By.res("com.android.systemui","notification_stack_scroller")),3000)
+                device.findObject(By.textContains("Silent"))?.click()
+                device.findObject(By.textContains("Без звука"))?.click()
+                return device.wait(Until.findObject(By.textContains("Индексация для поиска")),8000)
             }
-            find("Индексация для поиска",15000)
+            var shown=reveal()
+            if(shown==null) { device.pressBack(); Thread.sleep(400); shown=reveal() }
+            if(shown==null) {
+                val visible=device.findObjects(By.enabled(true)).mapNotNull{it.text?.takeIf{t->t.isNotBlank()}}.distinct().take(30).joinToString(" | ")
+                fail("Shade did not show the indexing notification. Posted: [$titles]. Visible: [$visible]")
+            }
             quickShot("search-03-index-notification")
             device.pressBack(); device.wait(Until.gone(By.text("Индексация для поиска")),3000)
             waitIndexed()
