@@ -106,21 +106,21 @@ class SearchAndHandlerTest {
                 Thread.sleep(200)
             }
             assertTrue("Indexing notification was not posted: [$titles]",titles.contains("Индексация для поиска"))
+            // Swiping the status bar on Android 16 can land in notification settings. Expand the list directly.
             fun reveal(): androidx.test.uiautomator.UiObject2? {
-                device.openNotification()
-                device.wait(Until.hasObject(By.res("com.android.systemui","notification_stack_scroller")),3000)
-                device.findObject(By.textContains("Silent"))?.click()
-                device.findObject(By.textContains("Без звука"))?.click()
+                shell("cmd statusbar collapse"); Thread.sleep(300)
+                shell("cmd statusbar expand-notifications"); Thread.sleep(800)
                 return device.wait(Until.findObject(By.textContains("Индексация для поиска")),8000)
             }
             var shown=reveal()
-            if(shown==null) { device.pressBack(); Thread.sleep(400); shown=reveal() }
+            if(shown==null) shown=reveal()
             if(shown==null) {
                 val visible=device.findObjects(By.enabled(true)).mapNotNull{it.text?.takeIf{t->t.isNotBlank()}}.distinct().take(30).joinToString(" | ")
                 fail("Shade did not show the indexing notification. Posted: [$titles]. Visible: [$visible]")
             }
             quickShot("search-03-index-notification")
-            device.pressBack(); device.wait(Until.gone(By.text("Индексация для поиска")),3000)
+            shell("cmd statusbar collapse")
+            device.pressBack(); device.wait(Until.gone(By.textContains("Индексация для поиска")),3000)
             waitIndexed()
             val index=ContentIndex.get(context)
             assertEquals(6004L,index.count(s.local))
