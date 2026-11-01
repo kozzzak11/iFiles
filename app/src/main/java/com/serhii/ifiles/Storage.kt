@@ -315,20 +315,47 @@ object Library {
     fun prune(list: List<String>, exists: (String)->Boolean) = list.filter { runCatching { exists(it) }.getOrDefault(false) }.distinct().take(RECENT_LIMIT)
 }
 
-/** Streamed, bounded-memory verified operations. Never follows local symlinks. */
-class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progress: (String) -> Unit = {}) {
+/**
+ * Streamed, bounded-memory verified operations. Never follows local symlinks.
+ * [progress] stays the last parameter so existing trailing-lambda callers still count names, not bytes.
+ */
+class FileEngine(
+    val s: Storage,
+    val stopped: () -> Boolean = {false},
+    private val onBytes: (Long) -> Unit = {},
+    private val onFile: (String) -> Unit = {},
+    private val onPhase: (String) -> Unit = {},
+    private val onMeasured: (Long, Int) -> Unit = { _, _ -> },
+    val progress: (String) -> Unit = {}
+) {
     companion object { const val TRASH_DAYS=30L }
     fun checkpoint() { if(stopped()) throw InterruptedIOException("Операция прервана; исходные файлы сохранены") }
-    fun digest(ref: String): Pair<Long,String> = s.input(ref).use { input ->
-        val md=MessageDigest.getInstance("SHA-256"); val buf=ByteArray(256*1024); var size=0L
-        while(true) { checkpoint(); val n=input.read(buf); if(n<0)break; md.update(buf,0,n); size+=n }
-        size to md.digest().joinToString("") { "%02x".format(it) }
+    fun reportBytes(n: Long) { if(n>0) onBytes(n) }
+    fun reportFile(name: String) { progress(name); onFile(name) }
+    /** Bytes and file count of [refs], including everything inside folders. */
+    fun tally(refs: List<String>): Pair<Long,Int> {
+        var bytes=0L; var files=0
+        fun walk(ref: String, depth: Int) {
+            checkpoint(); require(depth<128) { "Слишком глубокая вложенность" }
+            val e=s.stat(ref)
+            if(e.directory) s.list(ref).forEach { walk(it.ref, depth+1) }
+            else { files++; bytes+=e.size.coerceAtLeast(0) }
+        }
+        refs.forEach { walk(it, 0) }
+        return bytes to files
+    }
+    fun digest(ref: String): Pair<Long,String> {
+        onPhase("verify")
+        return s.input(ref).use { input ->
+            val md=MessageDigest.getInstance("SHA-256"); val buf=ByteArray(256*1024); var size=0L
+            while(true) { checkpoint(); val n=input.read(buf); if(n<0)break; md.update(buf,0,n); size+=n }
+            size to md.digest().joinToString("") { "%02x".format(it) }
+        }
     }
     fun transfer(source: String, dest: String) {
+        onPhase("write")
         s.input(source).use { input -> s.output(dest).use { out ->
-            val buf=ByteArray(256*1024)
-            while(true) { checkpoint(); val n=input.read(buf); if(n<0)break; out.write(buf,0,n) }
-            out.flush(); if(out is FileOutputStream) out.fd.sync()
+            TransferCopy.pump(input, out, { checkpoint() }, { reportBytes(it) })
         } }
         check(digest(source)==digest(dest)) { "Проверка копии не пройдена; исходник сохранён" }
     }
@@ -355,7 +382,8 @@ class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progr
     fun copy(source: String, parent: String, name: String? = null, depth: Int = 0, freshName: Boolean = false): String {
         checkpoint(); require(depth<128) { "Слишком глубокая вложенность" }
         if(depth==0)assertOutside(source,parent)
-        val e=s.stat(source); progress(e.name)
+        val e=s.stat(source)
+        if(e.directory) { onPhase("prepare"); progress(e.name) } else reportFile(e.name)
         if(e.directory && s.isFile(source))require(s.file(source).listFiles()?.none { Files.isSymbolicLink(it.toPath()) } == true) { "Папка содержит символические ссылки; операция отменена" }
         val children=if(e.directory)s.list(source) else emptyList()
         val target=s.create(parent,name ?: s.unique(parent,e.name),e.directory,e.mime,checked=freshName)
@@ -463,6 +491,7 @@ class FileEngine(val s: Storage, val stopped: () -> Boolean = {false}, val progr
         val dir=File(trashRoot,id); val rec=s.read(File(dir,"record.json"))
         require(rec.optString("state")!="copying") { "Незавершённая копия: исходник не удалялся" }
         val backup=rec.getString("backup"); val destination=parent ?: rec.getString("parent")
+        val measured=tally(listOf(backup)); onMeasured(measured.first, measured.second)
         // The backup is stored as "item"; restore it under its original name.
         val target=copy(backup,destination,s.unique(destination,rec.optString("name").ifBlank { s.stat(backup).name }))
         check(equivalent(backup,target)); rec.put("state","restored").put("restoredTo",target); s.atomic(File(dir,"record.json"),rec)

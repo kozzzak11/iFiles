@@ -1,15 +1,9 @@
 package com.serhii.ifiles
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import androidx.core.app.NotificationCompat
 import androidx.work.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -65,47 +59,81 @@ class OperationWorker(context: Context, params: WorkerParameters): CoroutineWork
         var checked=0L; var flagged=false
         // Checked at every engine checkpoint (per 256 KB buffer); the file check is throttled.
         val stop={ if(!flagged) { val now=System.currentTimeMillis(); if(now-checked>250) { checked=now; flagged=flag.exists() } }; isStopped || flagged }
+        val tracker=TransferTracker()
+        var notifier: TransferNotifier?=null
+        val alive=java.util.concurrent.atomic.AtomicBoolean(true)
         try {
             val r=s.read(task);val kind=r.getString("kind")
-            setForeground(notification("Подготовка…"))
-            s.atomic(started,JSONObject().put("state","started"))
-            var last=0L
-            val engine=FileEngine(s,stop) { name ->
-                val now=System.currentTimeMillis()
-                if(now-last>400) { last=now;setProgressAsync(workDataOf("file" to name.take(150))) }
+            tracker.setKind(kind)
+            notifier=TransferNotifier(applicationContext,id)
+            val notes=notifier
+            fun publish() {
+                if(!alive.get())return
+                val snap=tracker.snapshot()
+                if(!alive.get())return
+                runCatching { setForegroundAsync(notes.foreground(snap)) }
+                if(alive.get())setProgressAsync(snap.toData())
             }
+            setForeground(notes.foreground(tracker.snapshot()))
+            s.atomic(started,JSONObject().put("state","started"))
+            setProgressAsync(tracker.snapshot().toData())
+            val engine=FileEngine(s,stop,
+                onBytes={ tracker.addBytes(it) },
+                onFile={ tracker.startFile(it) },
+                onPhase={ tracker.phase(it) },
+                onMeasured={ bytes,files -> tracker.setTotal(bytes,files) },
+                progress={ tracker.touchName(it) }
+            )
             val array=r.getJSONArray("refs");val refs=(0 until array.length()).map { array.getString(it) }
             val parent=r.getString("parent")
-            when(kind) {
-                "copy" -> refs.forEach { engine.copy(it,parent) }
-                "move" -> refs.forEach { engine.move(it,parent) }
-                "trash" -> refs.forEach { engine.trash(it,r.getString("sourceParent")) }
-                "mkdir" -> s.create(parent,r.getString("name"),true)
-                "rename" -> { val n=s.rename(refs.single(),r.getString("name"),parent);s.rewriteRef(refs.single(),n) }
-                "zip" -> Archives(engine).zip(refs,parent,r.getString("name"))
-                "unzip" -> refs.forEach { Archives(engine).unzip(it,parent) }
-                "restore" -> refs.forEach { engine.restore(it,parent.ifBlank { null }) }
-                "purge" -> engine.purgeMany(refs)
-                else -> error("Неизвестная операция")
+            coroutineScope {
+                // Keeps the shade moving even while a write or fsync is blocked on a slow USB port.
+                val ticker=launch(Dispatchers.Default) {
+                    while(isActive) {
+                        delay(500)
+                        runCatching { publish() }
+                    }
+                }
+                try {
+                    if(kind in setOf("copy","move","trash","zip")) {
+                        tracker.phase("prepare")
+                        publish()
+                        val measured=engine.tally(refs)
+                        tracker.setTotal(measured.first, measured.second)
+                        tracker.phase("write")
+                        publish()
+                    }
+                    when(kind) {
+                        "copy" -> refs.forEach { engine.copy(it,parent) }
+                        "move" -> refs.forEach { engine.move(it,parent) }
+                        "trash" -> refs.forEach { engine.trash(it,r.getString("sourceParent")) }
+                        "mkdir" -> s.create(parent,r.getString("name"),true)
+                        "rename" -> { val n=s.rename(refs.single(),r.getString("name"),parent);s.rewriteRef(refs.single(),n) }
+                        "zip" -> Archives(engine).zip(refs,parent,r.getString("name"))
+                        "unzip" -> refs.forEach { Archives(engine).unzip(it,parent) }
+                        "restore" -> refs.forEach { engine.restore(it,parent.ifBlank { null }) }
+                        "purge" -> engine.purgeMany(refs)
+                        else -> error("Неизвестная операция")
+                    }
+                } finally { alive.set(false); ticker.cancel() }
             }
             Operations.clean(applicationContext,id)
+            val done=tracker.snapshot()
+            val detail=if(done.bytesDone>0) "${TransferSnap.kindTitle(kind)} · ${humanSize(done.bytesDone)}" else "Операция завершена"
+            notes.finish("done", detail)
             Result.success(workDataOf("message" to "Готово"))
         } catch(e: Exception) {
-            if(e is kotlinx.coroutines.CancellationException)throw e
+            alive.set(false)
+            if(e is CancellationException) {
+                runCatching { notifier?.finish("failed", "Операция прервалась") }
+                throw e
+            }
             val cancelled=flag.exists()
             Operations.clean(applicationContext,id)
-            if(cancelled)Result.success(workDataOf("error" to (Operations.CANCELLED+". "+(e.message ?: "")).take(1000),"cancelled" to true))
-            else Result.success(workDataOf("error" to (e.message ?: "Операция не выполнена").take(1000)))
+            val message=if(cancelled) (Operations.CANCELLED+". "+(e.message ?: "")).take(1000) else (e.message ?: "Операция не выполнена").take(1000)
+            runCatching { notifier?.finish(if(cancelled) "cancelled" else "failed", message) }
+            if(cancelled) Result.success(workDataOf("error" to message,"cancelled" to true))
+            else Result.success(workDataOf("error" to message))
         }
-    }
-    private fun notification(text: String): ForegroundInfo {
-        val context=applicationContext
-        val nm=context.getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel("operations","Файловые операции",NotificationManager.IMPORTANCE_LOW))
-        val open=PendingIntent.getActivity(context,0,Intent(context,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val cancel=PendingIntent.getBroadcast(context,id.hashCode(),Intent(context,CancelOperationReceiver::class.java).putExtra("id",id.toString()),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val n=NotificationCompat.Builder(context,"operations").setSmallIcon(android.R.drawable.stat_notify_sync).setContentTitle("iFiles").setContentText(text).setContentIntent(open).setOngoing(true)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel,"Отменить",cancel).build()
-        return ForegroundInfo(id.hashCode(),n,ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     }
 }

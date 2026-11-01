@@ -110,6 +110,7 @@ private val Blue=Color(0xFF007AFF)
     var confirmTrash by remember{mutableStateOf<List<String>?>(null)};var info by remember{mutableStateOf<Entry?>(null)}
     var toolbar by remember{mutableStateOf(false)}
     var showOperations by remember{mutableStateOf(false)}
+    var showTransfer by remember{mutableStateOf(false)}
     var showIndex by remember{mutableStateOf(false)}
     var clip by remember{mutableStateOf(runCatching{JSONArray(s.prefs.getString("clipboard","[]")).let{j->(0 until j.length()).map{j.getString(it)}}}.getOrDefault(emptyList()))}
     var cut by remember{mutableStateOf(s.prefs.getBoolean("cut",false))}
@@ -175,6 +176,13 @@ private val Blue=Color(0xFF007AFF)
         }
     }
     LaunchedEffect(a.notice) {a.notice?.let{snack.showSnackbar(it);vm.notice(null)}}
+    val activeJobs=a.jobs.filter{!it.state.isFinished}
+    val activeJob=activeJobs.firstOrNull{it.state==androidx.work.WorkInfo.State.RUNNING} ?: activeJobs.firstOrNull()
+    val notificationsOn=androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
+    fun openNotificationSettings() {
+        val intent=Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+        runCatching { context.startActivity(intent) }.onFailure(vm::error)
+    }
     BackHandler(a.stack.isNotEmpty() || a.selecting || a.tab !in listOf("Обзор","Недавние","Избранное") || a.query.isNotEmpty()) {
         if(a.stack.isEmpty() && !a.selecting && a.query.isEmpty())vm.tab("Обзор") else vm.back()
     }
@@ -233,14 +241,6 @@ private val Blue=Color(0xFF007AFF)
                     }
                 }
                 a.warning?.let {Text(it,Modifier.padding(horizontal=20.dp,vertical=4.dp),fontSize=12.sp,color=colors.error)}
-                val jobs=a.jobs.filter{!it.state.isFinished}
-                if(jobs.isNotEmpty()) {
-                    val j=jobs.firstOrNull{it.state==androidx.work.WorkInfo.State.RUNNING} ?: jobs.first()
-                    Row(Modifier.fillMaxWidth().padding(horizontal=20.dp),verticalAlignment=Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp);Text(j.progress.getString("file") ?: "Файловая операция…",Modifier.weight(1f).padding(8.dp),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp)
-                        TextButton(onClick={vm.cancel(j.id)}){Text("Отменить")}
-                    }
-                }
                 if(incoming.isNotEmpty() && !incomingView)Row(Modifier.padding(horizontal=20.dp),verticalAlignment=Alignment.CenterVertically){
                     Text("Получено файлов: ${incoming.size}",Modifier.weight(1f));TextButton(onClick={vm.operation("copy",incoming,parent=a.current?.ref ?: s.local);clearIncoming()}){Text("Сохранить здесь")};IconButton(onClick=clearIncoming){Icon(Icons.Outlined.Close,"Закрыть")}
                 }
@@ -306,6 +306,9 @@ private val Blue=Color(0xFF007AFF)
                         }
                     }
                 }
+                activeJob?.let { job ->
+                    TransferBanner(job, activeJobs.size-1, notificationsOn, {showTransfer=true}, {vm.cancel(job.id)}, ::openNotificationSettings)
+                }
                 if(a.current!=null && !a.loading)Text("${a.entries.size} элементов",Modifier.fillMaxWidth().padding(8.dp),textAlign=TextAlign.Center,fontSize=11.sp,color=colors.onSurfaceVariant)
             }
         }
@@ -352,6 +355,7 @@ private val Blue=Color(0xFF007AFF)
             }){Text(if(purge)"Удалить навсегда" else "В корзину",color=colors.error)}},dismissButton={TextButton(onClick={confirmTrash=null}){Text("Отмена")}})
         }
         info?.let{e->Properties(e,s){info=null}}
+        activeJob?.let { job -> if(showTransfer) TransferDetails(job, {vm.cancel(job.id);showTransfer=false}, {showTransfer=false}) }
         if(showIndex)IndexSheet(vm,a,roots){showIndex=false}
         if(showOperations)ModalBottomSheet(onDismissRequest={showOperations=false}) {
             Text("История операций",Modifier.padding(20.dp),fontSize=24.sp,fontWeight=FontWeight.Bold)
@@ -360,13 +364,49 @@ private val Blue=Color(0xFF007AFF)
                 items(a.jobs,key={it.id}){job->Column(Modifier.fillMaxWidth().padding(vertical=8.dp)) {
                     val result=when(job.state){androidx.work.WorkInfo.State.SUCCEEDED->if(job.outputData.getBoolean("cancelled",false))"Отменено" else if(job.outputData.getString("error")!=null)"Ошибка" else "Завершено";androidx.work.WorkInfo.State.FAILED->"Ошибка";androidx.work.WorkInfo.State.CANCELLED->"Отменено: проверьте назначение и корзину";androidx.work.WorkInfo.State.RUNNING->"Выполняется";else->"В очереди"}
                     Text(result,fontWeight=FontWeight.SemiBold)
-                    Text(job.outputData.getString("error") ?: job.progress.getString("file") ?: job.id.toString(),fontSize=12.sp)
+                    Text(job.outputData.getString("error") ?: job.progress.getString("text") ?: job.progress.getString("file") ?: job.id.toString(),fontSize=12.sp)
                     if(!job.state.isFinished)TextButton(onClick={vm.cancel(job.id)}){Text("Отменить")}
                 };HorizontalDivider()}
             }
         }
         LaunchedEffect(Unit){if(android.os.Build.VERSION.SDK_INT>=33 && androidx.core.content.ContextCompat.checkSelfPermission(context,Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED)notifications.launch(Manifest.permission.POST_NOTIFICATIONS)}
+        LaunchedEffect(activeJob?.id){if(activeJob!=null && android.os.Build.VERSION.SDK_INT>=33 && androidx.core.content.ContextCompat.checkSelfPermission(context,Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED)notifications.launch(Manifest.permission.POST_NOTIFICATIONS)}
     }
+}
+
+@Composable private fun TransferBanner(job: androidx.work.WorkInfo, queued: Int, notificationsOn: Boolean, onOpen:()->Unit, onCancel:()->Unit, onSettings:()->Unit) {
+    val p=job.progress
+    val title=p.getString("title") ?: "Файловая операция…"
+    val line=p.getString("line") ?: (p.getString("file") ?: "Подготовка…")
+    val sub=p.getString("sub") ?: ""
+    val percent=p.getInt("percent", -1)
+    val phase=p.getString("phase") ?: ""
+    val stalled=p.getBoolean("stalled", false)
+    Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp, vertical=6.dp), shape=RoundedCornerShape(14.dp), color=MaterialTheme.colorScheme.surface, shadowElevation=1.dp) {
+        Column(Modifier.clickable(onClick=onOpen).padding(horizontal=12.dp, vertical=8.dp).semantics{contentDescription="Прогресс передачи $title"}) {
+            Row(verticalAlignment=Alignment.CenterVertically) {
+                Text(title, Modifier.weight(1f), fontWeight=FontWeight.SemiBold, maxLines=1, overflow=TextOverflow.Ellipsis)
+                TextButton(onClick=onCancel){Text("Отменить")}
+            }
+            if(percent>=0 && phase!="prepare" && !stalled) LinearProgressIndicator({percent/100f}, Modifier.fillMaxWidth())
+            else LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(line, fontSize=12.sp, maxLines=2, overflow=TextOverflow.Ellipsis)
+            if(sub.isNotEmpty() || queued>0) Text(listOf(sub, if(queued>0)"в очереди ещё $queued" else "").filter{it.isNotEmpty()}.joinToString(" · "), fontSize=12.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, maxLines=1, overflow=TextOverflow.Ellipsis)
+            if(!notificationsOn) TextButton(onClick=onSettings){Text("Включить уведомления")}
+        }
+    }
+}
+@Composable private fun TransferDetails(job: androidx.work.WorkInfo, onCancel:()->Unit, onClose:()->Unit) {
+    val p=job.progress
+    val stalled=p.getBoolean("stalled", false)
+    AlertDialog(onDismissRequest=onClose, title={Text(p.getString("title") ?: "Файловая операция")}, text={Column {
+        Text(p.getString("line") ?: (p.getString("file") ?: "Подготовка…"))
+        val sub=p.getString("sub") ?: ""
+        if(sub.isNotEmpty()) Text(sub, Modifier.padding(top=8.dp), fontSize=13.sp, color=MaterialTheme.colorScheme.onSurfaceVariant)
+        if(stalled) Text("Нет новых байт больше 15 секунд. Порт может быть медленным, или накопитель не отвечает. Отмена оставит уже записанную часть.", Modifier.padding(top=8.dp), fontSize=13.sp)
+        val speed=p.getLong("speed", 0)
+        if(speed>0 && !stalled) Text("${humanSize(speed)}/с", Modifier.padding(top=8.dp), fontSize=13.sp)
+    }}, confirmButton={TextButton(onClick=onCancel){Text("Отменить")}}, dismissButton={TextButton(onClick=onClose){Text("Закрыть")}})
 }
 
 @OptIn(ExperimentalFoundationApi::class)
